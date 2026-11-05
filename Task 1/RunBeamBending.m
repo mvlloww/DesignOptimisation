@@ -5,13 +5,14 @@ c = 0.15; %define the chord length - KEEP FIXED
 R = 1.5; %blade length (m)
 r = linspace(0,R,N); %radial position of every node, root (r = 0) to tip (r = R)
 
-structure = 'skin'; %structural concept to analyse: 'skin' (Approach 2) or 'spar' (Approach 1)
+structure = 'skin'; %structural concept to analyse: 'skin' (Approach 2), 'spar' (Approach 1, solid),
+                    %'box' (Approach 1, hollow box spar) or 'solid' (fully filled blade)
 
 switch structure
     case 'skin'
         %linear taper of skin thickness from root to tip
-        tRoot = 1.2e-3; %skin thickness at the root (m)
-        tTip = 0.4e-3; %skin thickness at the tip (m) - keep > 0 so I never reaches zero
+        tRoot = 2e-3; %skin thickness at the root (m)
+        tTip = 0.8e-3; %skin thickness at the tip (m) - keep > 0 so I never reaches zero
         t = tRoot + (tTip - tRoot)*r/R; %set the skin thickness at every node (m)
         [I, A, ymax] = skinSection(t,c); %second moment of area, cross-section area and outer fibre distance
 
@@ -22,6 +23,27 @@ switch structure
         wTip = 5e-3; %spar width at the tip (m) - keep > 0 so I never reaches zero
         w = wRoot + (wTip - wRoot)*r/R; %set the spar width at every node (m)
         [I, A, ymax] = sparSection(w,xs,c); %second moment of area, cross-section area and outer fibre distance
+
+    case 'box'
+        %hollow box spar (theory guide, Approach 1): two vertical webs and
+        %top/bottom flanges following the aerofoil, all of wall thickness t.
+        %Width and wall thickness both taper linearly from root to tip.
+        xs = 0.35; %chordwise position of the box centre, x/c (0.3 = max thickness)
+        wRoot = 85e-3; %box width at the root (m)
+        wTip = 10e-3; %box width at the tip (m)
+        tRoot = 3.2e-3; %wall thickness at the root (m)
+        tTip = 0.8e-3; %wall thickness at the tip (m) - two printed perimeters
+        w = wRoot + (wTip - wRoot)*r/R; %box width at every node (m)
+        t = tRoot + (tTip - tRoot)*r/R; %wall thickness at every node (m)
+        [I, A, ymax] = boxSection(w,t,xs,c); %second moment of area, cross-section area and outer fibre distance
+
+    case 'solid'
+        %fully filled aerofoil = a "spar" spanning the whole chord (x = 0 to c)
+        %at every node. This is the stiffest possible blade for this profile
+        %and material: a limit on what any internal structure can achieve.
+        xs = 0.5; %centre of the chord
+        w = c*ones(1,N); %full chord width at every node
+        [I, A, ymax] = sparSection(w,xs,c);
 end
 
 %submit to beamBending:
@@ -44,13 +66,16 @@ vol = trapz(nodeLocations,A); %m^3
 sigma = abs(M).*ymax./I; %bending stress magnitude at every node (Pa) - solver returns M as negative
 fprintf('Structure: %s\n', structure)
 fprintf('Volume = %.1f cm^3 (mass = %.3f kg at ABS ~1050 kg/m^3)\n', vol*1e6, vol*1050)
-fprintf('Tip deflection = %.3f m, max bending stress = %.2f MPa (yield 30 MPa)\n', abs(delta(end)), max(sigma)/1e6)
+fprintf('Tip deflection = %.3f m (%.0f%% of span), max bending stress = %.2f MPa (yield 30 MPa)\n', ...
+        abs(delta(end)), 100*abs(delta(end))/L, max(sigma)/1e6)
 
 %plot the aerofoil and the structural cross-section
 figure(1)
 switch structure
     case 'skin', plotSkin(t,c)
     case 'spar', plotSpar(w,xs,c)
+    case 'box', plotBox(w,t,xs,c)
+    case 'solid', plotSpar(w,xs,c), title('NACA0012 fully filled (solid) section')
 end
 
 %plot the results
@@ -120,6 +145,34 @@ function [I, A, ymax] = sparSection(w,xs,c)
     end
 end
 
+%Approach 1 (hollow): box spar of width w and wall thickness t, centred at
+%x/c = xs. The outer box fills the aerofoil depth between its webs; the
+%hollow inside runs from x1+t to x2-t with depth 2(y_t - t). As in the
+%theory guide, I = sum(outer strips) - sum(inner strips), same for A.
+%With t = w/2 the hollow vanishes and this equals the solid spar.
+function [I, A, ymax] = boxSection(w,t,xs,c)
+    nStrips = 50; %number of rectangles across the box (and across the hollow)
+    w = w(:); t = t(:); %one row per spanwise node
+    x1 = max(xs*c - w/2, 0); %front web outer face (clipped to the aerofoil)
+    x2 = min(xs*c + w/2, c); %rear web outer face
+    [Io, Ao, ymax] = stripSum(x1, x2, 0*t, c, nStrips); %outer box
+    [Ii, Ai] = stripSum(x1 + t, max(x2 - t, x1 + t), t, c, nStrips); %hollow (zero width if walls meet)
+    I = (Io - Ii)'; A = (Ao - Ai)'; ymax = ymax';
+end
+
+%sum of strips between x = a and x = b (one row per node), each strip of
+%height 2(y_t - inset), clipped at zero where the inset exceeds y_t
+function [I, A, ymax] = stripSum(a,b,inset,c,nStrips)
+    s = linspace(0,1,nStrips+1);
+    edges = a + (b - a).*s; %strip edges, one row per node
+    bw = diff(edges,1,2); %strip widths
+    mid = (edges(:,1:end-1) + edges(:,2:end))/2;
+    d = max(2*(naca0012(mid,c) - inset), 0); %strip heights
+    I = sum(bw.*d.^3/12, 2);
+    A = sum(bw.*d, 2);
+    ymax = max(naca0012(edges,c), [], 2); %furthest fibre from the neutral axis
+end
+
 %plot the NACA0012 outline with the skin at the root (blue) and the inner
 %surface of the tip skin (red dashed). Skin drawn inwards from the outer surface.
 function plotSkin(t,c)
@@ -139,6 +192,33 @@ function plotSkin(t,c)
     xlabel('chordwise position x, mm'), ylabel('y, mm')
     title(sprintf('NACA0012 structural skin: t = %.2f mm (root, blue), %.2f mm (tip, red dashed)', ...
           t(1)*1e3, t(end)*1e3))
+end
+
+%plot the NACA0012 outline with the box spar at the root (blue, hollow
+%shown white) and the outline of the tip box (red dashed)
+function plotBox(w,t,xs,c)
+    x = linspace(0,c,400);
+    yt = naca0012(x,c);
+    plot(x*1e3,yt*1e3,'k-',x*1e3,-yt*1e3,'k-'), hold on
+    boxes = [1 numel(w)]; edgeCols = {'b','r'}; styles = {'-','--'};
+    for k = 1:2
+        n = boxes(k);
+        xo = linspace(max(xs*c - w(n)/2,0), min(xs*c + w(n)/2,c), 100); %outer faces
+        yo = naca0012(xo,c);
+        xi = linspace(xo(1) + t(n), xo(end) - t(n), 100); %hollow
+        yi = max(naca0012(xi,c) - t(n), 0);
+        if k == 1
+            fill([xo fliplr(xo)]*1e3, [yo -fliplr(yo)]*1e3, [0.7 0.8 1], 'EdgeColor','b','LineWidth',1.2)
+            fill([xi fliplr(xi)]*1e3, [yi -fliplr(yi)]*1e3, 'w', 'EdgeColor','b')
+        else
+            plot([xo fliplr(xo) xo(1)]*1e3, [yo -fliplr(yo) yo(1)]*1e3, 'r--','LineWidth',1.2)
+            plot([xi fliplr(xi) xi(1)]*1e3, [yi -fliplr(yi) yi(1)]*1e3, 'r--')
+        end
+    end
+    axis equal, grid on
+    xlabel('chordwise position x, mm'), ylabel('y, mm')
+    title(sprintf('NACA0012 box spar: w = %.0f mm, t = %.1f mm (root, blue); w = %.0f mm, t = %.1f mm (tip, red dashed)', ...
+          w(1)*1e3, t(1)*1e3, w(end)*1e3, t(end)*1e3))
 end
 
 %plot the NACA0012 outline with the spar at the root (blue) and tip (red dashed)
