@@ -225,9 +225,13 @@ switch mode
         P.note = sprintf('local box: x1 %g-%g | x2 %g-%g | x3 %g-%g', ...
             reshape([dn(lo,cfg); dn(hi,cfg)], 1, []));
     case 'confirm'
+        % Confirm calls: +/-5% steps from the best measured point (measured
+        % local sensitivity, cycling x1, x2, x3), and the LAST call measures
+        % the final surrogate optimum if it is still unmeasured, so a correct
+        % model's optimum always ends up as a measured, recommendable point.
         P.phase = 7;
-        if min(pdist2(uS, Udata)) >= cfg.stableTol && ~is_sampled(dn(uS,cfg), L, cfg)
-            u = uS; P.note = 'confirm: surrogate optimum';
+        if nLeft == 1 && min(pdist2(uS, Udata)) >= cfg.stableTol && ~is_sampled(dn(uS,cfg), L, cfg)
+            u = uS; P.note = 'confirm (last call): measure the final surrogate optimum';
         else
             ub = nrm(L(best_obs(L),3:5), cfg);
             k = mod(sum(L(:,2)==7), 3) + 1;
@@ -446,18 +450,33 @@ if makePlots, figures(L, F, uS, cfg); end
 end
 
 function recommend(L, F, uS, cfg)
-% Recommendation = surrogate optimum rounded to setting precision, checked
-% against the best measured point, with worst case over +/-1 setting step.
-xr = dn(uS, cfg); ib = best_obs(L);
-yr = spredict(F.m, nrm(xr, cfg));
+% Recommendation = the BEST MEASURED point (a setting the box has actually
+% been asked about), never an unmeasured surrogate prediction. The surrogate
+% optimum is reported alongside: if it has not been measured, a spare call
+% there (override 'x' at the prompt) is the way to check it; the last
+% confirm call does this automatically. Robustness:
+% surrogate worst case over +/-1 setting step around the recommendation.
+ib = best_obs(L); xr = L(ib,3:5); ymeas = L(ib,6);
+xs = dn(uS, cfg); ys = spredict(F.m, uS);
+d = pdist2(nrm(xs, cfg), nrm(L(:,3:5), cfg)); [dmin, j] = min(d);
 [a,b,c] = ndgrid(-1:1); K = [a(:) b(:) c(:)] .* cfg.res;
 Xn = min(max(xr + K, cfg.lb), cfg.ub);
-yw = min(spredict(F.m, nrm(Xn, cfg)));
-fprintf('\n=== RECOMMENDATION ===\n');
-fprintf('Set x1 = %g (£k), x2 = %g (£k), x3 = %g   predicted MCSI %.5g\n', xr, yr);
-fprintf('Best measured: [%g %g %g] MCSI %.5g (run %d)\n', L(ib,3:5), L(ib,6), L(ib,1));
-fprintf('Worst case if each knob is off by one setting step [%g %g %g]: %.5g (%.3f%% lower)\n', ...
-        cfg.res, yw, 100*(yr - yw)/abs(yr));
+yp = spredict(F.m, nrm(xr, cfg)); yw = min(spredict(F.m, nrm(Xn, cfg)));
+ph = {'LHS','hold-out','repeat','exploit','explore','local','confirm','explore (anywhere)'};
+fprintf('\n=== RECOMMENDATION (best measured point) ===\n');
+fprintf('Set x1 = %g (£k), x2 = %g (£k), x3 = %g   MEASURED MCSI %.5g (run %d, %s)\n', ...
+        xr, ymeas, L(ib,1), ph{L(ib,2)});
+fprintf('Surrogate optimum: [%g %g %g] predicted %.5g -> ', xs, ys);
+if dmin < cfg.stableTol || is_sampled(xs, L, cfg)
+    fprintf('measured (run %d: %.5g)\n', L(j,1), L(j,6));
+else
+    fprintf('NOT measured (nearest sample %.3f away, normalised)\n', dmin);
+    if ys > ymeas + F.rmse
+        fprintf('   !! predicted %.3g above the best measured (> 1 LOO-RMSE): worth a spare call there (override x)\n', ys - ymeas);
+    end
+end
+fprintf('Worst case if each knob is off by one setting step [%g %g %g]: %.5g predicted (%.3f%% below the prediction at the recommendation)\n', ...
+        cfg.res, yw, 100*(yp - yw)/abs(yp));
 end
 
 function figures(L, F, uS, cfg)
@@ -477,15 +496,17 @@ end
 
 function final_figure(L, F, uS, cfg)
 % Report figure of the final surrogate, 2x2:
-%  (a)-(c) 2D slices through the recommended point, one shared colour scale,
-%          near-optimal region outlined, samples projected onto each slice
-%  (d)     MCSI along each input through the optimum (one-at-a-time sensitivity)
+%  (a)-(c) 2D slices through the recommended (best measured) point, one shared
+%          colour scale, near-optimal region outlined, samples projected onto
+%          each slice, surrogate optimum marked if it differs
+%  (d)     MCSI along each input through the recommendation (one-at-a-time)
 blue = [205 226 251; 158 197 244; 109 167 236; 57 135 229; 37 106 191; 24 79 149; 13 54 107]/255;
 cmap = interp1(linspace(0,1,7), blue, linspace(0,1,256));        % one hue, light -> dark
 ser  = [42 120 214; 235 104 52; 27 175 122]/255;                  % validated categorical
 ink  = [0.12 0.12 0.12]; muted = [0.45 0.45 0.45];
-xs = dn(uS, cfg); us = nrm(xs, cfg); ys = spredict(F.m, us);
-thr = ys - cfg.nearOptFrac * range_(L(:,6));
+ib = best_obs(L); xs = L(ib,3:5); us = nrm(xs, cfg); ys = spredict(F.m, us);  % recommendation
+xo = dn(uS, cfg);                                                             % surrogate optimum
+thr = spredict(F.m, uS) - cfg.nearOptFrac * range_(L(:,6));
 g = linspace(0, 1, 80); pr = [1 2 3; 1 3 2; 2 3 1];
 Z = cell(3,1); AB = cell(3,1);
 for p = 1:3
@@ -510,19 +531,22 @@ for p = 1:3
          'MarkerFaceColor','w', 'MarkerEdgeColor', ink);
     h3 = plot(ax, L(adapt,2+a), L(adapt,2+b), 'o', 'MarkerSize', 5, ...
          'MarkerFaceColor', ser(2,:), 'MarkerEdgeColor','w');
+    h5 = plot(ax, xo(a), xo(b), 'x', 'MarkerSize', 11, 'LineWidth', 2, 'Color', [200 40 40]/255);
     h4 = plot(ax, xs(a), xs(b), 'p', 'MarkerSize', 16, 'MarkerFaceColor', ink, 'MarkerEdgeColor','w');
-    if p == 1, H = [h1 h2 h3 h4]; ax1 = ax; end
+    if p == 1, H = [h1 h2 h3 h4 h5]; ax1 = ax; end
     if p == 3, ax3 = ax; end
     colormap(ax, cmap); caxis(ax, clim_);
     xlabel(ax, cfg.names{a}); ylabel(ax, cfg.names{b});
-    title(ax, sprintf('%s slice at %s = %g', lbl{p}, cfg.names{c}, xs(c)), 'FontWeight','normal');
+    if c == 3, sv = sprintf('%.2f', xs(c)); else, sv = sprintf('%.1f', xs(c)); end
+    title(ax, sprintf('%s slice at %s = %s', lbl{p}, cfg.names{c}, sv), 'FontWeight','normal');
     set(ax, 'Layer','top', 'TickDir','out', 'XColor', muted, 'YColor', muted);
     cb = colorbar(ax); ylabel(cb, 'predicted MCSI');
     set(ax, 'Position', pos(p,:));               % all three slices the same size
     set(cb, 'Position', [pos(p,1)+pos(p,3)+0.012, pos(p,2), 0.012, pos(p,4)]);  % beside, not on top
 end
 lg = legend(ax1, H, {sprintf('near-optimal region (within %.0f%% of range of max)', 100*cfg.nearOptFrac), ...
-       'fixed design (LHS + hold-out)', 'adaptive (infill, local, confirm)', 'recommended'}, ...
+       'fixed design (LHS + hold-out)', 'adaptive (infill, local, confirm)', 'recommended (best measured)', ...
+       'surrogate optimum'}, ...
        'Orientation','horizontal', 'Box','off');
 set(lg, 'Position', [0.05 0.015 0.9 0.03]);
 
@@ -539,15 +563,15 @@ end
 plot(ax, [0 100], [thr thr], '--', 'Color', muted, 'LineWidth', 1);
 plot(ax, 100*us, ys*[1 1 1], 'p', 'MarkerSize', 12, 'MarkerFaceColor', ink, 'MarkerEdgeColor','w');
 xlabel(ax, 'input setting (% of range)'); ylabel(ax, 'predicted MCSI');
-title(ax, '(d) each input varied alone, others at optimum', 'FontWeight','normal');
+title(ax, '(d) each input varied alone, others at the recommendation', 'FontWeight','normal');
 legend(ax, {cfg.names{:}, 'near-optimal threshold'}, 'Location','southeast', 'Box','off');
 set(ax, 'TickDir','out', 'XColor', muted, 'YColor', muted, 'GridAlpha', 0.15);
 
 print(f, 'fig_final_model.png', '-dpng', '-r300');
 fprintf('Saved fig_final_model.png\n');
-fprintf('Caption info: %s (LOOCV Q2 = %.3f), %d samples; recommended [%g, %g, %g], predicted MCSI %.4g;\n', ...
-        F.name, F.q2, size(L,1), xs, ys);
-fprintf('  slices pass through the recommended point; all samples are projected onto each slice.\n');
+fprintf('Caption info: %s (LOOCV Q2 = %.3f), %d samples; recommended (best measured) [%g, %g, %g], measured MCSI %.4g;\n', ...
+        F.name, F.q2, size(L,1), xs, L(ib,6));
+fprintf('  surrogate optimum [%g, %g, %g]; slices pass through the recommendation; all samples projected onto each slice.\n', xo);
 end
 
 % =====================================================================
@@ -1037,13 +1061,14 @@ make_plan(c, false); run_loop(c, @(x) fake_box(x, kind), false);
 L = load_log(c); cleanup(c);
 F = fit_best(L, c); uS = maximise(F.m); xs = dn(uS, c);
 [xt, yt, yr, pk] = true_opt(c, kind);
-ys_true = fake_true(xs, kind); [yb, ib] = max(L(:,6));
+ys_true = fake_true(xs, kind); [yb, ib] = max(L(:,6)); xb = L(ib,3:5);   % recommendation = best measured
 fprintf('\n%s box, nTrain %d, seed %d: model %s (LOO Q2 %.3f)\n', kind, nTr, seed, F.name, F.q2);
 fprintf('True optimum      [%6.1f %5.1f %.3f]  MCSI %.4f\n', xt, yt);
 if size(pk,1) > 1, fprintf('Rival peak        [%6.1f %5.1f %.3f]  MCSI %.4f\n', pk(2,1:3), pk(2,4)); end
 fprintf('Surrogate optimum [%6.1f %5.1f %.3f]  predicted %.4f, TRUE %.4f (%.2f%% below optimum)\n', ...
         xs, spredict(F.m, uS), ys_true, 100*(yt - ys_true)/yt);
-fprintf('Best measured     [%6.1f %5.1f %.3f]  MCSI %.4f (%.2f%% below optimum)\n', L(ib,3:5), yb, 100*(yt - yb)/yt);
+fprintf('Recommended = best measured [%6.1f %5.1f %.3f]  MCSI %.4f, TRUE %.4f (%.2f%% below optimum)\n', ...
+        xb, yb, fake_true(xb, kind), 100*(yt - fake_true(xb, kind))/yt);
 
 % ---- slices through the true optimum
 blue = [205 226 251; 158 197 244; 109 167 236; 57 135 229; 37 106 191; 24 79 149; 13 54 107]/255;
@@ -1079,7 +1104,8 @@ for row = 1:2
             h4 = plot(ax, pk(2,a), pk(2,b), 'd', 'MarkerSize', 9, 'MarkerFaceColor','w', 'MarkerEdgeColor', ink, 'LineWidth', 1.2);
         else, h4 = gobjects(1); end
         h5 = plot(ax, xs(a), xs(b), 'x', 'MarkerSize', 12, 'LineWidth', 2.2, 'Color', red);
-        if row == 1 && p == 1, H = [hc h1 h2 h3 h4 h5]; end
+        h6 = plot(ax, xb(a), xb(b), 'o', 'MarkerSize', 11, 'LineWidth', 2.2, 'Color', red);
+        if row == 1 && p == 1, H = [hc h1 h2 h3 h4 h5 h6]; end
         colormap(ax, cmap); caxis(ax, cl);
         xlabel(ax, c.names{a}); ylabel(ax, c.names{b});
         if k == 3, sv = sprintf('%.2f', xt(k)); else, sv = sprintf('%.1f', xt(k)); end
@@ -1090,13 +1116,13 @@ for row = 1:2
 end
 cb = colorbar(ax); cb.Layout.Tile = 'east'; ylabel(cb, 'MCSI');
 nm = {'MCSI = rival peak level (inside beats the rival)', 'fixed design (LHS + hold-out)', ...
-      'adaptive calls', 'true global optimum', 'rival peak', 'surrogate optimum (recommended)'};
+      'adaptive calls', 'true global optimum', 'rival peak', 'surrogate optimum', 'recommended (best measured)'};
 ok = isgraphics(H);
 lg = legend(H(ok), nm(ok), 'Orientation','horizontal', 'Box','off', 'NumColumns', 3);
 lg.Layout.Tile = 'south';
 title(tl, sprintf(['%s fake box, nTrain = %d, seed %d: final model %s (LOO Q^2 %.2f)\n' ...
-      'Recommendation %.1f%% below the true optimum, best measured %.1f%% below. Slices through the true optimum; all samples projected onto each slice.'], ...
-      [upper(kind(1)) kind(2:end)], nTr, seed, F.name, F.q2, 100*(yt - ys_true)/yt, 100*(yt - yb)/yt), ...
+      'Recommendation (best measured) %.1f%% below the true optimum; surrogate optimum %.1f%% below. Slices through the true optimum; all samples projected.'], ...
+      [upper(kind(1)) kind(2:end)], nTr, seed, F.name, F.q2, 100*(yt - fake_true(xb, kind))/yt, 100*(yt - ys_true)/yt), ...
       'FontWeight','normal', 'Color', ink, 'FontSize', 11);
 print(f, 'fig_truth_vs_surrogate.png', '-dpng', '-r300');
 fprintf('Saved fig_truth_vs_surrogate.png\n');
@@ -1107,24 +1133,25 @@ function R = study(cfg, nTr, seeds, kinds)
 % fake boxes for each nTrain (budget, hold-out and confirm calls unchanged),
 % repeated over seeds (different plan + knob-setting errors). Measures:
 %   gap of the best observed reading below the true optimum (%)
-%   gap of the RECOMMENDED setting (true value there) below the optimum (%)
+%   gap of the RECOMMENDED setting = best measured point (true value) (%)
+%   gap of the unmeasured SURROGATE optimum (old rule, for comparison) (%)
 %   call at which the session first went local (optimum judged found)
 %   success: recommendation better than the rival peak (found the global one)
 % Runs on study_* files, so the real bb_log.csv is never touched.
-% R rows: [kind nTrain seed bestGap recGap firstLocal success time]
+% R rows: [kind nTrain seed bestGap recGap firstLocal success time surGap]
 if nargin < 2 || isempty(nTr), nTr = [10 15 20 25 30 35]; end
 if nargin < 3 || isempty(seeds), seeds = 1:5; end
 if nargin < 4 || isempty(kinds), kinds = {'easy','hard'}; end
 if ischar(kinds), kinds = {kinds}; end
 c0 = cfg; c0.logFile = 'study_log.csv'; c0.planFile = 'study_plan.csv'; c0.stateFile = 'study_state.mat';
 nK = numel(kinds); nI = numel(nTr); nS = numel(seeds); B = cfg.budget;
-R = nan(0, 8); G = nan(nK, nI, nS, B);   % G: best-so-far gap (%) after each call
+R = nan(0, 9); G = nan(nK, nI, nS, B);   % G: best-so-far gap (%) after each call
 yrs = nan(1, nK); yts = nan(1, nK);      % rival and global peak value per box
 for q = 1:nK
     [~, yt, yr] = true_opt(cfg, kinds{q}); yrs(q) = yr; yts(q) = yt;
     fprintf('\n=== nTrain study, %s box: %d settings x %d seeds, budget %d, optimum %.5g, rival %.5g ===\n', ...
             kinds{q}, nI, nS, B, yt, yr);
-    fprintf('%7s %5s %12s %12s %12s %8s %8s\n', 'nTrain', 'seed', 'best gap %', 'rec. gap %', 'first local', 'global?', 'time s');
+    fprintf('%7s %5s %12s %12s %12s %8s %8s %12s\n', 'nTrain', 'seed', 'best gap %', 'rec. gap %', 'first local', 'global?', 'time s', 'sur. opt %');
     for i = 1:nI
         for j = 1:nS
             c = c0; c.nTrain = nTr(i); c.seed = 100 + seeds(j);
@@ -1132,24 +1159,26 @@ for q = 1:nK
             make_plan(c, false); run_loop(c, @(x) fake_box(x, kinds{q}), false);
             L = load_log(c);
             G(q,i,j,1:size(L,1)) = 100*(yt - cummax(L(:,6)))/yt;
-            F = fit_best(L, c); xr = dn(maximise(F.m), c); yrec = fake_true(xr, kinds{q});
+            F = fit_best(L, c); ysur = fake_true(dn(maximise(F.m), c), kinds{q});
+            yrec = fake_true(L(best_obs(L), 3:5), kinds{q});      % recommendation = best measured
             fl = find(L(:,2) == 6, 1); if isempty(fl), fl = NaN; end
-            R(end+1,:) = [q, nTr(i), seeds(j), G(q,i,j,end), 100*(yt - yrec)/yt, fl, yrec > yr, toc(t0)]; %#ok<AGROW>
-            fprintf('%7d %5d %12.4f %12.4f %12g %8d %8.1f\n', R(end,2:8));
+            R(end+1,:) = [q, nTr(i), seeds(j), G(q,i,j,end), 100*(yt - yrec)/yt, fl, yrec > yr, toc(t0), ...
+                          100*(yt - ysur)/yt]; %#ok<AGROW>
+            fprintf('%7d %5d %12.4f %12.4f %12g %8d %8.1f %12.4f\n', R(end,2:9));
         end
     end
 end
 cleanup(c0);
 
-fprintf('\n%-5s %7s %13s %13s %14s %15s %9s\n', 'box', 'nTrain', 'best gap med', 'rec gap med', 'rec gap worst', 'local at (med)', 'global');
+fprintf('\n%-5s %7s %13s %13s %14s %15s %15s %9s\n', 'box', 'nTrain', 'best gap med', 'rec gap med', 'rec gap worst', 'sur.opt worst', 'local at (med)', 'global');
 for q = 1:nK
     for i = 1:nI
         r = R(R(:,1) == q & R(:,2) == nTr(i), :);
         fl = r(:,6); nNever = sum(isnan(fl)); fl(isnan(fl)) = B + 1;
         if median(fl) > B, ls = 'never'; else, ls = sprintf('%g', median(fl)); end
         if nNever > 0, ls = sprintf('%s (%d never)', ls, nNever); end
-        fprintf('%-5s %7d %13.4f %13.4f %14.4f %15s %6d/%d\n', kinds{q}, nTr(i), median(r(:,4)), ...
-                median(r(:,5)), max(r(:,5)), ls, sum(r(:,7)), size(r,1));
+        fprintf('%-5s %7d %13.4f %13.4f %14.4f %15.4f %15s %6d/%d\n', kinds{q}, nTr(i), median(r(:,4)), ...
+                median(r(:,5)), max(r(:,5)), max(r(:,9)), ls, sum(r(:,7)), size(r,1));
     end
 end
 
@@ -1186,7 +1215,11 @@ for q = 1:nK
              'MarkerFaceColor', cm(i,:), 'MarkerEdgeColor','w');
     end
     med = arrayfun(@(n) median(rq(rq(:,2)==n, 5)), nTr);
-    plot(ax, nTr, max(med, floorGap), '-', 'Color', ink, 'LineWidth', 1.5);
+    hm = plot(ax, nTr, max(med, floorGap), '-', 'Color', ink, 'LineWidth', 1.5);
+    msur = arrayfun(@(n) median(rq(rq(:,2)==n, 9)), nTr);          % old rule, for comparison
+    hs = plot(ax, nTr, max(msur, floorGap), '--', 'Color', muted, 'LineWidth', 1.2);
+    legend(ax, [hm hs], {'best measured (recommended)', 'unmeasured surrogate optimum'}, ...
+           'Location','southwest', 'Box','off', 'FontSize', 8);
     set(ax, 'YScale','log'); ylim(ax, [floorGap/2 20]);
     if isfinite(yrs(q))
         yline(ax, gapR, '--', 'rival peak', 'Color', orange, 'LabelHorizontalAlignment','left', 'FontSize', 8);
@@ -1195,7 +1228,7 @@ for q = 1:nK
           'LabelVerticalAlignment','bottom', 'FontSize', 8);
     xlabel(ax, 'nTrain'); ylabel(ax, 'true MCSI at recommendation, % below optimum');
     title(ax, '(b) Quality of the recommendation', 'FontWeight','normal');
-    subtitle(ax, sprintf('dots = seeds, line = median (0 plotted at %g)', floorGap), 'Color', muted);
+    subtitle(ax, sprintf('dots = seeds; lines = medians (0 plotted at %g)', floorGap), 'Color', muted);
     % (c) first local call, 'never' shown above the budget
     ax = nexttile(tl); hold(ax,'on'); box(ax,'on'); grid(ax,'on');
     yNever = B + 3;
