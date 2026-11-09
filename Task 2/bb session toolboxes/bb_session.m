@@ -18,6 +18,10 @@ function out = bb_session(cmd, varargin)
 %                           files, so the real log is safe.
 %                           bb_session('study', nTrainList, seedList, kinds)
 %   bb_session('rehearse','hard')  rehearse on the hard (two-peak) fake box
+%   bb_session('truthplot', kind, nTrain, seed)  one rehearsal on a fake box,
+%                           then true response vs final surrogate as 2D
+%                           slices through the true optimum
+%                           (fig_truth_vs_surrogate.png; default 'hard', 25, 1)
 %
 % At the MCSI> prompt type ONE of:
 %   7.42                 reading, knobs set exactly as suggested
@@ -29,7 +33,15 @@ function out = bb_session(cmd, varargin)
 % and calling bb_session again resumes where you left off.
 %
 % Phase codes in the log: 1 LHS, 2 hold-out, 3 repeat (optional), 4 exploit,
-%                         5 explore, 6 local, 7 confirm
+%                         5 explore (top 25% of predictions), 6 local,
+%                         7 confirm, 8 explore (anywhere: pure space-filling)
+% Log columns: run, phase, x1, x2, x3, y (MCSI), ypred, model, q2
+%   model = surrogate that chose the point (and made ypred), NaN if none:
+%           1 poly linear, 2 poly quadratic, 3 poly cubic, 4 RBF gaussian,
+%           5 RBF multiquadric, 6 RBF inv. multiquadric, 7 RBF cubic,
+%           8 RBF thin-plate, 9 Kriging
+%   q2    = that model's LOOCV Q2 when the point was chosen
+% Older 7-column logs are read with model = q2 = NaN.
 % The box is assumed deterministic. The log always holds the settings
 % actually dialled, so knob-setting error never enters the model.
 %
@@ -52,6 +64,7 @@ switch lower(cmd)
     case 'maxcheck', out = maxcheck(cfg);
     case 'plancompare', out = plancompare(cfg);
     case 'study',    out = study(cfg, varargin{:});
+    case 'truthplot', out = truthplot(cfg, varargin{:});
     otherwise, error('unknown command %s', cmd);
 end
 end
@@ -164,7 +177,7 @@ end
 % =====================================================================
 function P = next_point(L, plan, cfg, override, verbose)
 n = size(L,1);
-P.ypred = NaN; P.sig = NaN; P.note = '';
+P.ypred = NaN; P.sig = NaN; P.note = ''; P.model = NaN; P.q2 = NaN;
 
 % ---- fixed block -------------------------------------------------------
 if n < size(plan,1) && isempty(override)
@@ -174,6 +187,7 @@ if n < size(plan,1) && isempty(override)
     if P.phase ~= 1 && size(tr,1) >= 10
         F = fit_best(tr, cfg);
         P.m = F.m; P.ypred = spredict(F.m, nrm(P.x,cfg)); P.sig = F.rmse;
+        P.model = model_code(F.name); P.q2 = F.q2;
     end
     show(P, n, cfg, verbose);
     return;
@@ -192,7 +206,7 @@ elseif nLeft <= cfg.nConfirm, mode = 'confirm';
 elseif any(L(:,2)==6), mode = 'local';
 elseif D.all, mode = 'local';
 else
-    nG = sum(L(:,2)==4 | L(:,2)==5);
+    nG = sum(L(:,2)==4 | L(:,2)==5 | L(:,2)==8);
     if F.q2 >= cfg.q2High && ~D.rival, period = 3; else, period = 2; end
     if mod(nG, period) == period - 1, mode = 'explore'; else, mode = 'exploit'; end
 end
@@ -225,14 +239,24 @@ switch mode
         end
 end
 if strcmp(mode, 'explore')
-    % most isolated point among the top 25% of predicted MCSI
-    P.phase = 5;
-    C = rand(20000,3); yc = spredict(F.m, C);
-    C = C(yc >= quantile(yc, 0.75), :);
+    % Explore calls alternate between two kinds:
+    %  5: most isolated point among the top 25% of predicted MCSI (looks for
+    %     a better peak where the model already expects good values)
+    %  8: most isolated point ANYWHERE (pure space-filling): probes regions
+    %     the model dismisses, so a peak it cannot see can still be found
+    C = rand(20000,3);
+    if mod(sum(L(:,2)==5 | L(:,2)==8), 2) == 0
+        P.phase = 5; yc = spredict(F.m, C);
+        C = C(yc >= quantile(yc, 0.75), :);
+    else
+        P.phase = 8;
+        P.note = strtrim([P.note ' explore anywhere (space-filling)']);
+    end
     [~, k] = max(min(pdist2(C, Udata), [], 2)); u = C(k,:);
 end
 P.x = dn(u, cfg);
 P.m = F.m; P.ypred = spredict(F.m, nrm(P.x, cfg)); P.sig = F.rmse;
+P.model = model_code(F.name); P.q2 = F.q2;
 if verbose
     fprintf('\nModel %s (LOO Q2 %.3f) | checks: stable %d, accurate %d, no rival %d, calls %d -> %s\n', ...
         F.name, F.q2, D.stable, D.accurate, ~D.rival && D.explored, D.calls, upper(mode));
@@ -253,7 +277,7 @@ r = find(L(:,2)==4 | L(:,2)==6, 1, 'last');
 D.accurate = ~isempty(r) && ~isnan(L(r,7)) && abs(L(r,6)-L(r,7)) < cfg.errTol*yr;
 % 3 no rival peak, explored enough, explore never beat the optimum
 D.rival = size(peaks,1) > 1 && (yS - peaks(2,4)) < cfg.peakTol*yr;
-ex = L(L(:,2)==5, 6);
+ex = L(L(:,2)==5 | L(:,2)==8, 6);
 D.explored = numel(ex) >= 2 && all(ex <= yS);
 % 4 enough calls left
 D.calls = (cfg.budget - n - cfg.nConfirm) >= cfg.nLocalMin;
@@ -318,7 +342,7 @@ function record(L, P, xa, y, cfg, verbose)
 % it measures model error only, not knob-setting error.
 ypred = P.ypred;
 if ~isempty(P.m), ypred = spredict(P.m, nrm(xa, cfg)); end
-row = [size(L,1)+1, P.phase, xa, y, ypred];
+row = [size(L,1)+1, P.phase, xa, y, ypred, P.model, P.q2];
 write_log([L; row], cfg);
 if ~verbose, return; end
 yr = range_([L(:,6); y]);
@@ -353,23 +377,35 @@ write_log(L(1:end-1,:), cfg);
 end
 
 function L = load_log(cfg)
-L = zeros(0,7);
+% columns: run phase x1 x2 x3 y ypred model q2 (older 7-column logs padded)
+L = zeros(0,9);
 if exist(cfg.logFile,'file')
     t = dlmread(cfg.logFile, ',', 1, 0);
-    if ~isempty(t), L = t; end
+    if ~isempty(t)
+        if size(t,2) < 9, t(:, end+1:9) = NaN; end
+        L = t;
+    end
 end
 end
 
 function write_log(L, cfg)
 fid = fopen(cfg.logFile, 'w');
-fprintf(fid, 'run,phase,x1,x2,x3,y,ypred\n');
-fprintf(fid, '%d,%d,%.6g,%.6g,%.6g,%.10g,%.10g\n', L');
+fprintf(fid, 'run,phase,x1,x2,x3,y,ypred,model,q2\n');
+fprintf(fid, '%d,%d,%.6g,%.6g,%.6g,%.10g,%.10g,%d,%.4f\n', L');
 fclose(fid);
+end
+
+function k = model_code(name)
+% numeric code for the log (see header); NaN if unknown
+fam = {'poly linear','poly quadratic','poly poly333','RBF gaussian','RBF multiquadric', ...
+       'RBF invmultiquadric','RBF cubic','RBF thinplate','Kriging'};
+k = find(cellfun(@(f) startsWith(name, f), fam), 1);   % first family the name starts with
+if isempty(k), k = NaN; end
 end
 
 function show(P, n, cfg, verbose)
 if ~verbose, return; end
-names = {'LHS','hold-out','repeat','exploit','explore','local','confirm'};
+names = {'LHS','hold-out','repeat','exploit','explore','local','confirm','explore (anywhere)'};
 fprintf('\n>>> CALL %d/%d [%s]   x1 = %g   x2 = %g   x3 = %g\n', ...
     n+1, cfg.budget, names{P.phase}, P.x);
 if ~isnan(P.ypred), fprintf('    predicted MCSI %.5g\n', P.ypred); end
@@ -922,8 +958,8 @@ ib = best_obs(L);
 fprintf('\nTRUE optimum : [%.4g %.4g %.4g]  MCSI %.5g\n', xt, yt);
 fprintf('Best observed: [%.4g %.4g %.4g]  MCSI %.5g  (%.3f%% below)\n', ...
         L(ib,3:5), L(ib,6), 100*(yt-L(ib,6))/yt);
-fprintf('Phase counts (LHS hold rep exploit explore local confirm): %s\n', ...
-        mat2str(accumarray(L(:,2), 1, [7 1])'));
+fprintf('Phase counts (LHS hold rep exploit explore local confirm explore-anywhere): %s\n', ...
+        mat2str(accumarray(L(:,2), 1, [8 1])'));
 fprintf('Compute time %.1f s\n', t);
 out = L;
 end
@@ -966,7 +1002,7 @@ switch kind
 end
 end
 
-function [xt, yt, yr] = true_opt(cfg, kind)
+function [xt, yt, yr, pk] = true_opt(cfg, kind)
 % True optimum (and best rival peak yr, -Inf if none) of fake_true by
 % multistart fmincon. Rehearsal and study only.
 if nargin < 2, kind = 'easy'; end
@@ -984,6 +1020,86 @@ rng(rs);
 [~,o] = sort(pk(:,4), 'descend'); pk = pk(o,:);
 xt = dn(pk(1,1:3), cfg, false); yt = pk(1,4);
 if size(pk,1) > 1, yr = pk(2,4); else, yr = -Inf; end
+pk(:,1:3) = dn(pk(:,1:3), cfg, false);   % peaks in real units, best first
+end
+
+function L = truthplot(cfg, kind, nTr, seed)
+% One full rehearsal on a fake box (separate study_* files), then the TRUE
+% response and the session's FINAL surrogate side by side: three 2D slices
+% through the true global optimum, one shared colour scale.
+if nargin < 2 || isempty(kind), kind = 'hard'; end
+if nargin < 3 || isempty(nTr), nTr = cfg.nTrain; end
+if nargin < 4 || isempty(seed), seed = 1; end
+c = cfg; c.nTrain = nTr; c.seed = 100 + seed;
+c.logFile = 'study_log.csv'; c.planFile = 'study_plan.csv'; c.stateFile = 'study_state.mat';
+cleanup(c);
+make_plan(c, false); run_loop(c, @(x) fake_box(x, kind), false);
+L = load_log(c); cleanup(c);
+F = fit_best(L, c); uS = maximise(F.m); xs = dn(uS, c);
+[xt, yt, yr, pk] = true_opt(c, kind);
+ys_true = fake_true(xs, kind); [yb, ib] = max(L(:,6));
+fprintf('\n%s box, nTrain %d, seed %d: model %s (LOO Q2 %.3f)\n', kind, nTr, seed, F.name, F.q2);
+fprintf('True optimum      [%6.1f %5.1f %.3f]  MCSI %.4f\n', xt, yt);
+if size(pk,1) > 1, fprintf('Rival peak        [%6.1f %5.1f %.3f]  MCSI %.4f\n', pk(2,1:3), pk(2,4)); end
+fprintf('Surrogate optimum [%6.1f %5.1f %.3f]  predicted %.4f, TRUE %.4f (%.2f%% below optimum)\n', ...
+        xs, spredict(F.m, uS), ys_true, 100*(yt - ys_true)/yt);
+fprintf('Best measured     [%6.1f %5.1f %.3f]  MCSI %.4f (%.2f%% below optimum)\n', L(ib,3:5), yb, 100*(yt - yb)/yt);
+
+% ---- slices through the true optimum
+blue = [205 226 251; 158 197 244; 109 167 236; 57 135 229; 37 106 191; 24 79 149; 13 54 107]/255;
+cmap = interp1(linspace(0,1,7), blue, linspace(0,1,256));
+ink = [0.12 0.12 0.12]; muted = [0.45 0.45 0.45]; orange = [235 104 52]/255; red = [200 40 40]/255;
+ut = nrm(xt, c); g = linspace(0,1,120); pr = [1 2 3; 1 3 2; 2 3 1];
+Zt = cell(3,1); Zs = cell(3,1); XY = cell(3,1);
+for p = 1:3
+    a = pr(p,1); b = pr(p,2); k = pr(p,3);
+    [A,B] = meshgrid(g,g); Q = repmat(ut, numel(A), 1); Q(:,a) = A(:); Q(:,b) = B(:);
+    Zt{p} = reshape(fake_true(dn(Q,c,false), kind), size(A));
+    Zs{p} = reshape(spredict(F.m, Q), size(A));
+    XY{p} = {c.lb(a) + A*(c.ub(a)-c.lb(a)), c.lb(b) + B*(c.ub(b)-c.lb(b))};
+end
+allZ = [cellfun(@(z) min(z(:)), [Zt; Zs]); cellfun(@(z) max(z(:)), [Zt; Zs])];
+cl = [max(0, min(allZ(:))), min(10, max(allZ(:)))];
+fixed = L(:,2) <= 3; adapt = ~fixed;
+f = figure('Color','w', 'Position', [60 60 1350 820]);
+tl = tiledlayout(f, 2, 3, 'TileSpacing','compact', 'Padding','compact');
+rowName = {'TRUE response', 'Final SURROGATE'}; Zr = {Zt, Zs}; H = gobjects(0);
+for row = 1:2
+    for p = 1:3
+        a = pr(p,1); b = pr(p,2); k = pr(p,3);
+        ax = nexttile(tl); hold(ax,'on'); box(ax,'on');
+        contourf(ax, XY{p}{1}, XY{p}{2}, Zr{row}{p}, 20, 'LineColor','none');
+        if isfinite(yr)   % region that beats the rival peak (by this row's surface)
+            [~, hc] = contour(ax, XY{p}{1}, XY{p}{2}, Zr{row}{p}, [yr yr], 'LineColor', ink, 'LineWidth', 1.2);
+        else, hc = gobjects(1); end
+        h1 = plot(ax, L(fixed,2+a), L(fixed,2+b), 'o', 'MarkerSize', 4.5, 'MarkerFaceColor','w', 'MarkerEdgeColor', ink);
+        h2 = plot(ax, L(adapt,2+a), L(adapt,2+b), 'o', 'MarkerSize', 4.5, 'MarkerFaceColor', orange, 'MarkerEdgeColor','w');
+        h3 = plot(ax, xt(a), xt(b), 'p', 'MarkerSize', 15, 'MarkerFaceColor', ink, 'MarkerEdgeColor','w');
+        if size(pk,1) > 1
+            h4 = plot(ax, pk(2,a), pk(2,b), 'd', 'MarkerSize', 9, 'MarkerFaceColor','w', 'MarkerEdgeColor', ink, 'LineWidth', 1.2);
+        else, h4 = gobjects(1); end
+        h5 = plot(ax, xs(a), xs(b), 'x', 'MarkerSize', 12, 'LineWidth', 2.2, 'Color', red);
+        if row == 1 && p == 1, H = [hc h1 h2 h3 h4 h5]; end
+        colormap(ax, cmap); caxis(ax, cl);
+        xlabel(ax, c.names{a}); ylabel(ax, c.names{b});
+        if k == 3, sv = sprintf('%.2f', xt(k)); else, sv = sprintf('%.1f', xt(k)); end
+        title(ax, sprintf('%s: slice at %s = %s', rowName{row}, c.names{k}, sv), 'FontWeight','normal');
+        set(ax, 'Layer','top', 'TickDir','out', 'XColor', muted, 'YColor', muted);
+        try ax.Toolbar.Visible = 'off'; catch, end
+    end
+end
+cb = colorbar(ax); cb.Layout.Tile = 'east'; ylabel(cb, 'MCSI');
+nm = {'MCSI = rival peak level (inside beats the rival)', 'fixed design (LHS + hold-out)', ...
+      'adaptive calls', 'true global optimum', 'rival peak', 'surrogate optimum (recommended)'};
+ok = isgraphics(H);
+lg = legend(H(ok), nm(ok), 'Orientation','horizontal', 'Box','off', 'NumColumns', 3);
+lg.Layout.Tile = 'south';
+title(tl, sprintf(['%s fake box, nTrain = %d, seed %d: final model %s (LOO Q^2 %.2f)\n' ...
+      'Recommendation %.1f%% below the true optimum, best measured %.1f%% below. Slices through the true optimum; all samples projected onto each slice.'], ...
+      [upper(kind(1)) kind(2:end)], nTr, seed, F.name, F.q2, 100*(yt - ys_true)/yt, 100*(yt - yb)/yt), ...
+      'FontWeight','normal', 'Color', ink, 'FontSize', 11);
+print(f, 'fig_truth_vs_surrogate.png', '-dpng', '-r300');
+fprintf('Saved fig_truth_vs_surrogate.png\n');
 end
 
 function R = study(cfg, nTr, seeds, kinds)
