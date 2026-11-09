@@ -8,6 +8,10 @@ function out = bb_session(cmd)
 %   bb_session('figure')    report figure of the final model (fig_final_model.png)
 %   bb_session('rehearse')  full dry run on a fake function (deletes log!)
 %   bb_session('selftest')  check toolboxes + closed-form LOOCV vs brute force
+%   bb_session('maxcheck')  sensitivity of the surrogate optimum to grid size
+%                           and number of seeds in maximise (uses current log)
+%   bb_session('plancompare') chosen LHS vs Halton / random / other LHS
+%                           (fig_plan_compare.png; uses bb_plan.csv only)
 %
 % At the MCSI> prompt type ONE of:
 %   7.42                 reading, knobs set exactly as suggested
@@ -38,6 +42,8 @@ switch lower(cmd)
         final_figure(L, F, uS, cfg);
     case 'rehearse', out = rehearse(cfg);
     case 'selftest', out = selftest(cfg);
+    case 'maxcheck', out = maxcheck(cfg);
+    case 'plancompare', out = plancompare(cfg);
     otherwise, error('unknown command %s', cmd);
 end
 end
@@ -48,7 +54,7 @@ end
 function cfg = config()
 cfg.lb    = [0   0  0];
 cfg.ub    = [200 60 1];
-cfg.res   = [1   0.5 0.01];        % how precisely you can SET each knob (CHECK ON THE DAY)
+cfg.res   = [0.1   0.1 0.01];        % how precisely you can SET each knob (CHECK ON THE DAY)
 cfg.names = {'x1 advert (£k)','x2 targeting (£k)','x3 skew (-)'};
 
 cfg.budget  = 50;  cfg.nTrain = 25;  cfg.nTest = 5;  cfg.nConfirm = 3;
@@ -536,6 +542,102 @@ if verbose
 end
 end
 
+function S = plancompare(cfg)
+% Compare the chosen training plan (from bb_plan.csv) with other ways of
+% placing the same number of points: random uniform, random LHS,
+% correlation-minimising LHS, a single maximin LHS (no screening) and
+% scrambled Halton (random start), each drawn nRep times. Plain (unscrambled) Halton is a
+% single deterministic plan. Metrics: min pairwise distance (spread),
+% L2-star and exact D* (uniformity), and empty 1D slices (stratification:
+% for each input, how many of its n equal slices hold no point).
+if ~exist(cfg.planFile,'file'), error('No run sheet: run bb_session(''plan'') first'); end
+plan = dlmread(cfg.planFile, ',', 1, 0);
+Uc = nrm(plan(plan(:,2)==1, 3:5), cfg);
+n = size(Uc,1); nRep = 100;
+rng(cfg.seed + 1, 'twister');
+names = {'Random','Random LHS','Corr. LHS','Maximin LHS','Scr. Halton'};
+gen = {@() rand(n,3), ...
+       @() lhsdesign(n,3,'criterion','none'), ...
+       @() lhsdesign(n,3,'criterion','correlation','iterations',cfg.lhsIter), ...
+       @() lhsdesign(n,3,'criterion','maximin','iterations',cfg.lhsIter), ...
+       @() net(scramble(haltonset(3,'Skip',randi(1e4)),'RR2'), n)};   % RR2 is a fixed
+       % permutation, so a random start (skip) is what makes each draw different
+nG = numel(gen); M = nan(nRep, nG, 4); P = cell(nRep, nG);
+for j = 1:nG
+    for i = 1:nRep
+        P{i,j} = gen{j}(); M(i,j,:) = plan_metrics(P{i,j});
+    end
+end
+mc = plan_metrics(Uc);
+Uh = net(haltonset(3,'Skip',1), n); mh = plan_metrics(Uh);
+
+mnames = {'min distance','L2-star','D* exact','empty 1D slices'};
+fprintf('\n=== Sampling plan comparison: n = %d, d = 3, %d draws per method (medians) ===\n', n, nRep);
+fprintf('%-24s %12s %10s %10s %16s\n', 'plan', 'min dist', 'L2-star', 'D*', 'empty slices');
+for j = 1:nG
+    fprintf('%-24s %12.3f %10.4f %10.4f %16.0f\n', names{j}, squeeze(median(M(:,j,:),1)));
+end
+fprintf('%-24s %12.3f %10.4f %10.4f %16.0f\n', 'Halton (unscrambled)', mh);
+fprintf('%-24s %12.3f %10.4f %10.4f %16.0f\n', 'CHOSEN (screened)', mc);
+fprintf('Chosen plan beats %.0f%% of single maximin LHS and %.0f%% of scrambled Halton on min distance,\n', ...
+        100*mean(M(:,4,1) < mc(1)), 100*mean(M(:,5,1) < mc(1)));
+fprintf('and %.0f%% / %.0f%% on L2-star.\n', 100*mean(M(:,4,2) > mc(2)), 100*mean(M(:,5,2) > mc(2)));
+
+% ---- figure: top = x1-x2 projections, bottom = metric distributions
+ink = [0.12 0.12 0.12]; muted = [0.45 0.45 0.45]; faint = [0.88 0.88 0.88];
+blue = [42 120 214]/255; orange = [235 104 52]/255; green = [27 175 122]/255;
+f = figure('Color','w', 'Position', [80 80 1300 720]);
+tl = tiledlayout(f, 2, 4, 'TileSpacing','compact', 'Padding','compact');
+[~, iMed] = min(abs(M(:,:,1) - median(M(:,:,1),1)), [], 1);   % representative (median min-distance) draw
+show = {Uc, 'Maximin LHS, screened (chosen)', orange; ...
+        P{iMed(5),5}, 'Scrambled Halton', blue; ...
+        P{iMed(2),2}, 'Random LHS', blue; ...
+        P{iMed(1),1}, 'Random uniform', blue};
+lbl = 'abcdefgh';
+g = (0:n)/n; gl = [g; g; nan(1,n+1)];
+for p = 1:4
+    ax = nexttile(tl); hold(ax,'on'); box(ax,'on');
+    plot(ax, gl(:), repmat([0 1 NaN]', n+1, 1), '-', 'Color', faint);   % slice lines (x)
+    plot(ax, repmat([0 1 NaN]', n+1, 1), gl(:), '-', 'Color', faint);   % slice lines (y)
+    U = show{p,1};
+    plot(ax, U(:,1), U(:,2), 'o', 'MarkerSize', 6, 'MarkerFaceColor', show{p,3}, 'MarkerEdgeColor','w');
+    axis(ax, 'square'); xlim(ax, [0 1]); ylim(ax, [0 1]);
+    m = plan_metrics(U);
+    title(ax, sprintf('(%s) %s', lbl(p), show{p,2}), 'FontWeight','normal');
+    subtitle(ax, sprintf('min d %.3f | L2* %.4f | empty slices %d', m(1), m(2), m(4)), 'Color', muted);
+    xlabel(ax, 'x1 (normalised)'); ylabel(ax, 'x2 (normalised)');
+    set(ax, 'TickDir','out', 'XColor', muted, 'YColor', muted, 'Layer','top');
+end
+better = {'higher = better','lower = better','lower = better','lower = better'};
+for k = 1:4
+    ax = nexttile(tl); hold(ax,'on'); box(ax,'on'); grid(ax,'on');
+    x = repmat(1:nG, nRep, 1);
+    boxchart(ax, x(:), reshape(M(:,:,k), [], 1), 'BoxFaceColor', blue, 'MarkerColor', muted);
+    yline(ax, mh(k), '--', 'Halton', 'Color', green, 'LineWidth', 1.2, ...
+          'LabelHorizontalAlignment','left', 'FontSize', 8);
+    yline(ax, mc(k), '-', 'chosen', 'Color', orange, 'LineWidth', 1.8, ...
+          'LabelHorizontalAlignment','right', 'FontSize', 8);
+    set(ax, 'XTick', 1:nG, 'XTickLabel', names, 'TickDir','out', ...
+        'XColor', muted, 'YColor', muted, 'GridAlpha', 0.15);
+    xtickangle(ax, 30); xlim(ax, [0.4 nG+0.6]);
+    title(ax, sprintf('(%s) %s', lbl(4+k), mnames{k}), 'FontWeight','normal');
+    subtitle(ax, better{k}, 'Color', muted);
+end
+title(tl, sprintf('Sampling plans for n = %d points in 3 inputs (%d draws per method)', n, nRep), ...
+      'FontWeight','normal', 'Color', ink);
+print(f, 'fig_plan_compare.png', '-dpng', '-r300');
+fprintf('Saved fig_plan_compare.png\n');
+S = struct('names', {names}, 'metrics', M, 'metricNames', {mnames}, 'chosen', mc, 'halton', mh);
+end
+
+function m = plan_metrics(U)
+% [min pairwise distance, L2-star, exact D*, empty 1D slices summed over inputs]
+n = size(U,1);
+b = min(floor(U*n), n-1);
+emp = 0; for k = 1:size(U,2), emp = emp + n - numel(unique(b(:,k))); end
+m = [min(pdist(U)), l2star(U), dstar(U), emp];
+end
+
 function D = l2star(U)
 % L2-star discrepancy, Warnock closed form (fast proxy for D*)
 [n,d] = size(U); P = ones(n);
@@ -691,14 +793,17 @@ switch m.kind
 end
 end
 
-function [uB, yB, peaks] = maximise(m)
-% grid -> up to 6 separated seeds -> fmincon (bounded) from each.
+function [uB, yB, peaks] = maximise(m, nGrid, nSeed)
+% grid -> up to nSeed separated seeds -> fmincon (bounded) from each.
 % peaks = [u y] of distinct local maxima, best first.
-g = linspace(0,1,21); [a,b,c] = ndgrid(g,g,g); G = [a(:) b(:) c(:)];
+% Defaults (21^3 grid, 6 seeds) are justified by bb_session('maxcheck').
+if nargin < 2, nGrid = 21; end
+if nargin < 3, nSeed = 6; end
+g = linspace(0,1,nGrid); [a,b,c] = ndgrid(g,g,g); G = [a(:) b(:) c(:)];
 [~,o] = sort(spredict(m, G), 'descend'); S = G(o(1),:);
 for i = o(2:end)'
+    if size(S,1) >= nSeed, break; end
     if min(pdist2(G(i,:), S)) > 0.25, S(end+1,:) = G(i,:); end %#ok<AGROW>
-    if size(S,1) >= 6, break; end
 end
 opts = optimoptions('fmincon', 'Algorithm','sqp', 'Display','off');
 peaks = zeros(0,4);
@@ -710,6 +815,51 @@ for i = 1:size(S,1)
 end
 [~,o] = sort(peaks(:,4), 'descend'); peaks = peaks(o,:);
 uB = peaks(1,1:3); yB = peaks(1,4);
+end
+
+function T = maxcheck(cfg)
+% Sensitivity of the surrogate optimum to the inner-optimiser settings.
+% Fits the final model to the current log once, then reruns maximise for
+% every combination of grid size and seed count. Each optimum is compared
+% with the finest setting (41^3 grid, 12 seeds) in knob setting steps
+% (cfg.res): <= 1 step means the choice makes no practical difference.
+% T rows: [nGrid nSeed x1 x2 x3 yPred dy maxSteps nPeaks time_s]
+L = load_log(cfg);
+if size(L,1) < 10, error('maxcheck needs at least 10 logged calls'); end
+F = fit_best(L, cfg);
+grids = [11 21 41]; seeds = [3 6 12];
+[uR, yR] = maximise(F.m, grids(end), seeds(end));
+xR = dn(uR, cfg);
+
+fprintf('\n=== Inner optimiser sensitivity (%d calls, model %s) ===\n', size(L,1), F.name);
+if strcmp(F.m.kind, 'rbf') && any(strcmp(F.m.s.kernel, {'gaussian','multiquadric','invmultiquadric'}))
+    fprintf('RBF width %.3f vs grid spacing %.3f (21^3)', F.m.s.width, 1/20);
+    if F.m.s.width < 2/20, fprintf('  !! narrow basis: refine grid or raise min width'); end
+    fprintf('\n');
+end
+fprintf('Reference (41^3, 12 seeds): x = [%g %g %g], predicted MCSI %.6g\n\n', xR, yR);
+fprintf('%5s %5s   %-26s %10s %10s %9s %6s %7s\n', 'grid', 'seeds', 'optimum x', ...
+        'pred MCSI', 'dy', 'max steps', 'peaks', 'time s');
+T = zeros(0,10);
+for g = grids
+    for s = seeds
+        t0 = tic; [u, y, pk] = maximise(F.m, g, s); t = toc(t0);
+        x = dn(u, cfg);
+        steps = max(abs(x - xR) ./ cfg.res);
+        T(end+1,:) = [g s x y y-yR steps size(pk,1) t]; %#ok<AGROW>
+        fprintf('%4d^3 %5d   [%7.4g %7.4g %7.4g] %10.6g %+10.2e %9.0f %6d %7.2f\n', ...
+                g, s, x, y, y-yR, steps, size(pk,1), t);
+    end
+end
+ok = all(T(:,8) <= 1);
+r = T(:,1) == 21 & T(:,2) == 6;
+fprintf('\nDefault (21^3, 6 seeds): %.0f setting step(s) from reference, dy = %+.2e (%.4f%% of observed range)\n', ...
+        T(r,8), T(r,7), 100*abs(T(r,7))/range_(L(:,6)));
+if ok
+    fprintf('All settings agree to within 1 setting step: optimum insensitive to grid and seed count.\n');
+else
+    fprintf('!! Some settings disagree by more than 1 setting step: check rows above.\n');
+end
 end
 
 % =====================================================================
