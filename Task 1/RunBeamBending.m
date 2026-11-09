@@ -5,7 +5,7 @@ c = 0.15; %define the chord length - KEEP FIXED
 R = 1.5; %blade length (m)
 r = linspace(0,R,N); %radial position of every node, root (r = 0) to tip (r = R)
 
-structure = 'skin'; %structural concept to analyse: 'skin' (Approach 2), 'spar' (Approach 1, solid),
+structure = 'box'; %structural concept to analyse: 'skin' (Approach 2), 'spar' (Approach 1, solid),
                     %'box' (Approach 1, hollow box spar) or 'solid' (fully filled blade)
 
 switch structure
