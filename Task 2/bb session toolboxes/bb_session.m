@@ -28,7 +28,8 @@ function out = bb_session(cmd)
 % actually dialled, so knob-setting error never enters the model.
 %
 % Toolboxes: Statistics and Machine Learning (lhsdesign, pdist, pdist2,
-% fitlm, fitrgp, quantile) and Optimization (fmincon).
+% fitlm, fitrgp, quantile, haltonset), Optimization (fmincon) and Global
+% Optimization (MultiStart; optional, falls back to an fmincon loop).
 
 if nargin < 1, cmd = 'run'; end
 cfg = config();
@@ -793,12 +794,20 @@ switch m.kind
 end
 end
 
-function [uB, yB, peaks] = maximise(m, nGrid, nSeed)
-% grid -> up to nSeed separated seeds -> fmincon (bounded) from each.
+function [uB, yB, peaks] = maximise(m, nGrid, nSeed, method)
+% grid -> up to nSeed separated seeds -> fmincon SQP (bounded) from each.
+% The local runs are done by MultiStart (Global Optimization Toolbox) with
+% the grid seeds as custom start points, so the result stays deterministic
+% and the grid still guarantees global coverage. method = 'loop' runs the
+% same fmincon calls by hand (also the fallback without that toolbox).
 % peaks = [u y] of distinct local maxima, best first.
 % Defaults (21^3 grid, 6 seeds) are justified by bb_session('maxcheck').
 if nargin < 2, nGrid = 21; end
 if nargin < 3, nSeed = 6; end
+if nargin < 4, method = 'multistart'; end
+if strcmp(method, 'multistart') && ~(license('test','GADS_Toolbox') && exist('MultiStart','file'))
+    method = 'loop';
+end
 g = linspace(0,1,nGrid); [a,b,c] = ndgrid(g,g,g); G = [a(:) b(:) c(:)];
 [~,o] = sort(spredict(m, G), 'descend'); S = G(o(1),:);
 for i = o(2:end)'
@@ -806,11 +815,26 @@ for i = o(2:end)'
     if min(pdist2(G(i,:), S)) > 0.25, S(end+1,:) = G(i,:); end %#ok<AGROW>
 end
 opts = optimoptions('fmincon', 'Algorithm','sqp', 'Display','off');
+switch method
+    case 'multistart'
+        problem = createOptimProblem('fmincon', 'objective', @(u) -spredict(m,u), ...
+                  'x0', S(1,:), 'lb', [0 0 0], 'ub', [1 1 1], 'options', opts);
+        ms = MultiStart('Display','off', 'XTolerance',0.15);
+        [~, ~, ~, ~, sols] = run(ms, problem, CustomStartPointSet(S));
+        U = vertcat(sols.X);                     % local solutions, best first
+    case 'loop'
+        U = zeros(size(S));
+        for i = 1:size(S,1)
+            U(i,:) = fmincon(@(u) -spredict(m,u), S(i,:), [],[],[],[], [0 0 0], [1 1 1], [], opts);
+        end
+    otherwise, error('method must be multistart | loop');
+end
+U = min(max(U, 0), 1);
+% keep distinct peaks only (same 0.15 rule for both methods, so they are comparable)
 peaks = zeros(0,4);
-for i = 1:size(S,1)
-    u = fmincon(@(u) -spredict(m,u), S(i,:), [],[],[],[], [0 0 0], [1 1 1], [], opts);
-    if isempty(peaks) || min(pdist2(u, peaks(:,1:3))) > 0.15
-        peaks(end+1,:) = [u spredict(m,u)]; %#ok<AGROW>
+for i = 1:size(U,1)
+    if isempty(peaks) || min(pdist2(U(i,:), peaks(:,1:3))) > 0.15
+        peaks(end+1,:) = [U(i,:) spredict(m,U(i,:))]; %#ok<AGROW>
     end
 end
 [~,o] = sort(peaks(:,4), 'descend'); peaks = peaks(o,:);
@@ -832,6 +856,8 @@ grids = [11 21 41]; seeds = [3 6 12];
 xR = dn(uR, cfg);
 
 fprintf('\n=== Inner optimiser sensitivity (%d calls, model %s) ===\n', size(L,1), F.name);
+if license('test','GADS_Toolbox'), fprintf('Rows use MultiStart (fmincon SQP from the grid seeds).\n');
+else, fprintf('Global Optimization Toolbox missing: rows use the fmincon loop.\n'); end
 if strcmp(F.m.kind, 'rbf') && any(strcmp(F.m.s.kernel, {'gaussian','multiquadric','invmultiquadric'}))
     fprintf('RBF width %.3f vs grid spacing %.3f (21^3)', F.m.s.width, 1/20);
     if F.m.s.width < 2/20, fprintf('  !! narrow basis: refine grid or raise min width'); end
@@ -851,8 +877,13 @@ for g = grids
                 g, s, x, y, y-yR, steps, size(pk,1), t);
     end
 end
+t0 = tic; [u, y, pk] = maximise(F.m, 21, 6, 'loop'); t = toc(t0);
+x = dn(u, cfg); steps = max(abs(x - xR) ./ cfg.res);
+fprintf('%-11s   [%7.4g %7.4g %7.4g] %10.6g %+10.2e %9.0f %6d %7.2f   <- 21^3, 6 seeds, fmincon loop (no MultiStart)\n', ...
+        'hand loop', x, y, y-yR, steps, size(pk,1), t);
+T(end+1,:) = [21 6 x y y-yR steps size(pk,1) t];
 ok = all(T(:,8) <= 1);
-r = T(:,1) == 21 & T(:,2) == 6;
+r = find(T(:,1) == 21 & T(:,2) == 6, 1);
 fprintf('\nDefault (21^3, 6 seeds): %.0f setting step(s) from reference, dy = %+.2e (%.4f%% of observed range)\n', ...
         T(r,8), T(r,7), 100*abs(T(r,7))/range_(L(:,6)));
 if ok
@@ -892,7 +923,7 @@ y = 10*((1-exp(-3*a)).*(0.6+0.4*(1-exp(-5*b))).*(1+0.5*exp(-((c-0.35-0.3*b)/0.22
 end
 
 function worst = selftest(cfg)
-need = {'lhsdesign','pdist','pdist2','fitlm','fitrgp','quantile','fmincon','optimoptions'};
+need = {'lhsdesign','pdist','pdist2','fitlm','fitrgp','quantile','haltonset','fmincon','optimoptions','MultiStart'};
 for i = 1:numel(need)
     if exist(need{i}, 'file'), st = 'found'; else, st = 'MISSING'; end
     fprintf('%-13s %s\n', need{i}, st);
