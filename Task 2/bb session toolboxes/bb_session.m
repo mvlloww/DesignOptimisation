@@ -1,4 +1,4 @@
-function out = bb_session(cmd)
+function out = bb_session(cmd, varargin)
 % BB_SESSION  Whole black-box workflow in one file.
 %
 %   bb_session('plan')      before the session: build + check sampling plan
@@ -12,6 +12,12 @@ function out = bb_session(cmd)
 %                           and number of seeds in maximise (uses current log)
 %   bb_session('plancompare') chosen LHS vs Halton / random / other LHS
 %                           (fig_plan_compare.png; uses bb_plan.csv only)
+%   bb_session('study')     nTrain sweep: full rehearsals on the easy AND hard
+%                           fake boxes for several nTrain and seeds
+%                           (fig_ntrain_study.png). Uses its own study_*
+%                           files, so the real log is safe.
+%                           bb_session('study', nTrainList, seedList, kinds)
+%   bb_session('rehearse','hard')  rehearse on the hard (two-peak) fake box
 %
 % At the MCSI> prompt type ONE of:
 %   7.42                 reading, knobs set exactly as suggested
@@ -41,10 +47,11 @@ switch lower(cmd)
     case 'figure'
         L = load_log(cfg); F = fit_best(L, cfg); uS = maximise(F.m);
         final_figure(L, F, uS, cfg);
-    case 'rehearse', out = rehearse(cfg);
+    case 'rehearse', out = rehearse(cfg, varargin{:});
     case 'selftest', out = selftest(cfg);
     case 'maxcheck', out = maxcheck(cfg);
     case 'plancompare', out = plancompare(cfg);
+    case 'study',    out = study(cfg, varargin{:});
     otherwise, error('unknown command %s', cmd);
 end
 end
@@ -56,6 +63,9 @@ function cfg = config()
 cfg.lb    = [0   0  0];
 cfg.ub    = [200 60 1];
 cfg.res   = [0.1   0.1 0.01];        % how precisely you can SET each knob (CHECK ON THE DAY)
+                                     % x1 0.0-200.0 (£k), x2 0.0-60.0 (£k), x3 0.00-1.00
+cfg.yRange    = [0 10];             % MCSI display range (0-10.0000)
+cfg.yDecimals = 4;                  % MCSI display precision
 cfg.names = {'x1 advert (£k)','x2 targeting (£k)','x3 skew (-)'};
 
 cfg.budget  = 50;  cfg.nTrain = 25;  cfg.nTest = 5;  cfg.nConfirm = 3;
@@ -102,8 +112,10 @@ while true
     L = load_log(cfg);
     n = size(L,1);
     if n >= cfg.budget
-        fprintf('\nBudget of %d calls used.\n', cfg.budget);
-        status(L, cfg, interactive);
+        if verbose
+            fprintf('\nBudget of %d calls used.\n', cfg.budget);
+            status(L, cfg, interactive);
+        end
         return;
     end
     if n == size(plan,1) && isempty(override) && verbose
@@ -138,6 +150,9 @@ while true
             end
         else
             fprintf('  type MCSI, or x1 x2 x3 MCSI (got "%s")\n', s); continue;
+        end
+        if y < cfg.yRange(1) || y > cfg.yRange(2)
+            fprintf('  MCSI must be between %g and %g (got %g): re-enter\n', cfg.yRange, y); continue;
         end
     end
     record(L, P, xa, y, cfg, verbose);
@@ -896,30 +911,233 @@ end
 % =====================================================================
 %  REHEARSAL AND SELF-TEST
 % =====================================================================
-function out = rehearse(cfg)
+function out = rehearse(cfg, kind)
+if nargin < 2, kind = 'easy'; end
 if exist(cfg.logFile,'file'), delete(cfg.logFile); end
 make_plan(cfg, true);
-t0 = tic; run_loop(cfg, @fake_box, true); t = toc(t0);
+t0 = tic; run_loop(cfg, @(x) fake_box(x, kind), true); t = toc(t0);
 L = load_log(cfg);
-opts = optimoptions('fmincon', 'Algorithm','sqp', 'Display','off'); fb = inf;
-for s = 1:20
-    [u,fv] = fmincon(@(u) -fake_box(dn(u,cfg,false)), rand(1,3), [],[],[],[], [0 0 0],[1 1 1],[],opts);
-    if fv < fb, fb = fv; ut = u; end
-end
+[xt, yt] = true_opt(cfg, kind);
 ib = best_obs(L);
-fprintf('\nTRUE optimum : [%.4g %.4g %.4g]  MCSI %.5g\n', dn(ut,cfg,false), -fb);
+fprintf('\nTRUE optimum : [%.4g %.4g %.4g]  MCSI %.5g\n', xt, yt);
 fprintf('Best observed: [%.4g %.4g %.4g]  MCSI %.5g  (%.3f%% below)\n', ...
-        L(ib,3:5), L(ib,6), 100*(-fb-L(ib,6))/(-fb));
+        L(ib,3:5), L(ib,6), 100*(yt-L(ib,6))/yt);
 fprintf('Phase counts (LHS hold rep exploit explore local confirm): %s\n', ...
         mat2str(accumarray(L(:,2), 1, [7 1])'));
 fprintf('Compute time %.1f s\n', t);
 out = L;
 end
 
-function y = fake_box(x)
+function y = fake_box(x, kind)
+% Rehearsal stand-in for the real box: smooth response, shown like the real
+% display (clipped to 0-10, rounded to 4 decimals).
+if nargin < 2, kind = 'easy'; end
+y = min(max(round(fake_true(x, kind) * 1e4) / 1e4, 0), 10);
+end
+
+function y = fake_true(x, kind)
+% Smooth (unrounded) fake responses, used for the true optimum because
+% fmincon cannot differentiate the rounded display values.
+%  'easy': one smooth interior peak, diminishing returns, skew/targeting
+%          interaction. Optimum 9.62 at about [129 26 0.48].
+%  'hard': stress test with two competing strategies.
+%          broad    = heavy advertising, no targeting, low skew: wide, forgiving
+%                     peak, MCSI 8.58 at about [117 0 0.25] (on the x2 = 0 bound)
+%          targeted = targeting spend with high skew: narrow in skew (width
+%                     0.06) and its best skew moves with targeting. GLOBAL
+%                     optimum 9.00 at about [117 24 0.71], 4.7% above broad.
+%          Advertising needs critical mass (S-curve around 24 £k) before
+%          diminishing returns; spend costs; baseline index about 0.1-2.
+%          Only ~0.4% of the input space beats the broad peak, and ~54% of
+%          random local searches end on it: deliberately deceptive.
+if nargin < 2, kind = 'easy'; end
 a = x(:,1)/200; b = x(:,2)/60; c = x(:,3);
-y = 10*((1-exp(-3*a)).*(0.6+0.4*(1-exp(-5*b))).*(1+0.5*exp(-((c-0.35-0.3*b)/0.22).^2)) ...
-     - 0.45*a.^2 - 0.25*b.^2 - 0.1*a.*b);
+switch kind
+    case 'easy'
+        y = 10*((1-exp(-3*a)).*(0.6+0.4*(1-exp(-5*b))).*(1+0.5*exp(-((c-0.35-0.3*b)/0.22).^2)) ...
+             - 0.45*a.^2 - 0.25*b.^2 - 0.1*a.*b);
+    case 'hard'
+        reach    = (1 - exp(-4*a)) ./ (1 + exp(-(a - 0.12)/0.04));
+        broad    = exp(-((c - 0.25)/0.15).^2) .* (1 - 0.5*b);
+        targeted = exp(-((c - 0.65 - 0.15*b)/0.06).^2) .* (1 - exp(-6*b));
+        cost     = 0.3*a.^2 + 0.25*b.^2 + 0.1*a.*b;
+        y = 8.839 * (reach .* (0.55 + 0.35*broad + 0.52*targeted) - cost + 0.26);
+    otherwise, error('fake box kind must be easy | hard');
+end
+end
+
+function [xt, yt, yr] = true_opt(cfg, kind)
+% True optimum (and best rival peak yr, -Inf if none) of fake_true by
+% multistart fmincon. Rehearsal and study only.
+if nargin < 2, kind = 'easy'; end
+rs = rng; rng(0, 'twister');
+opts = optimoptions('fmincon', 'Algorithm','sqp', 'Display','off');
+pk = zeros(0,4);
+for s = 1:60
+    u = fmincon(@(u) -fake_true(dn(u,cfg,false), kind), rand(1,3), [],[],[],[], [0 0 0],[1 1 1],[],opts);
+    v = fake_true(dn(u,cfg,false), kind);
+    if isempty(pk) || min(pdist2(u, pk(:,1:3))) > 0.15, pk(end+1,:) = [u v]; %#ok<AGROW>
+    else, [~,i] = min(pdist2(u, pk(:,1:3))); if v > pk(i,4), pk(i,:) = [u v]; end
+    end
+end
+rng(rs);
+[~,o] = sort(pk(:,4), 'descend'); pk = pk(o,:);
+xt = dn(pk(1,1:3), cfg, false); yt = pk(1,4);
+if size(pk,1) > 1, yr = pk(2,4); else, yr = -Inf; end
+end
+
+function R = study(cfg, nTr, seeds, kinds)
+% How many LHS training points? Full rehearsals of the whole session on the
+% fake boxes for each nTrain (budget, hold-out and confirm calls unchanged),
+% repeated over seeds (different plan + knob-setting errors). Measures:
+%   gap of the best observed reading below the true optimum (%)
+%   gap of the RECOMMENDED setting (true value there) below the optimum (%)
+%   call at which the session first went local (optimum judged found)
+%   success: recommendation better than the rival peak (found the global one)
+% Runs on study_* files, so the real bb_log.csv is never touched.
+% R rows: [kind nTrain seed bestGap recGap firstLocal success time]
+if nargin < 2 || isempty(nTr), nTr = [10 15 20 25 30 35]; end
+if nargin < 3 || isempty(seeds), seeds = 1:5; end
+if nargin < 4 || isempty(kinds), kinds = {'easy','hard'}; end
+if ischar(kinds), kinds = {kinds}; end
+c0 = cfg; c0.logFile = 'study_log.csv'; c0.planFile = 'study_plan.csv'; c0.stateFile = 'study_state.mat';
+nK = numel(kinds); nI = numel(nTr); nS = numel(seeds); B = cfg.budget;
+R = nan(0, 8); G = nan(nK, nI, nS, B);   % G: best-so-far gap (%) after each call
+yrs = nan(1, nK); yts = nan(1, nK);      % rival and global peak value per box
+for q = 1:nK
+    [~, yt, yr] = true_opt(cfg, kinds{q}); yrs(q) = yr; yts(q) = yt;
+    fprintf('\n=== nTrain study, %s box: %d settings x %d seeds, budget %d, optimum %.5g, rival %.5g ===\n', ...
+            kinds{q}, nI, nS, B, yt, yr);
+    fprintf('%7s %5s %12s %12s %12s %8s %8s\n', 'nTrain', 'seed', 'best gap %', 'rec. gap %', 'first local', 'global?', 'time s');
+    for i = 1:nI
+        for j = 1:nS
+            c = c0; c.nTrain = nTr(i); c.seed = 100 + seeds(j);
+            cleanup(c); t0 = tic;
+            make_plan(c, false); run_loop(c, @(x) fake_box(x, kinds{q}), false);
+            L = load_log(c);
+            G(q,i,j,1:size(L,1)) = 100*(yt - cummax(L(:,6)))/yt;
+            F = fit_best(L, c); xr = dn(maximise(F.m), c); yrec = fake_true(xr, kinds{q});
+            fl = find(L(:,2) == 6, 1); if isempty(fl), fl = NaN; end
+            R(end+1,:) = [q, nTr(i), seeds(j), G(q,i,j,end), 100*(yt - yrec)/yt, fl, yrec > yr, toc(t0)]; %#ok<AGROW>
+            fprintf('%7d %5d %12.4f %12.4f %12g %8d %8.1f\n', R(end,2:8));
+        end
+    end
+end
+cleanup(c0);
+
+fprintf('\n%-5s %7s %13s %13s %14s %15s %9s\n', 'box', 'nTrain', 'best gap med', 'rec gap med', 'rec gap worst', 'local at (med)', 'global');
+for q = 1:nK
+    for i = 1:nI
+        r = R(R(:,1) == q & R(:,2) == nTr(i), :);
+        fl = r(:,6); nNever = sum(isnan(fl)); fl(isnan(fl)) = B + 1;
+        if median(fl) > B, ls = 'never'; else, ls = sprintf('%g', median(fl)); end
+        if nNever > 0, ls = sprintf('%s (%d never)', ls, nNever); end
+        fprintf('%-5s %7d %13.4f %13.4f %14.4f %15s %6d/%d\n', kinds{q}, nTr(i), median(r(:,4)), ...
+                median(r(:,5)), max(r(:,5)), ls, sum(r(:,7)), size(r,1));
+    end
+end
+
+% ---- figure: one row per fake box
+ink = [0.12 0.12 0.12]; muted = [0.45 0.45 0.45]; orange = [235 104 52]/255;
+cm = interp1([0 1], [158 197 244; 13 54 107]/255, linspace(0,1,nI));   % light -> dark = more training points
+f = figure('Color','w', 'Position', [60 60 1500 420*nK]);
+tl = tiledlayout(f, nK, 4, 'TileSpacing','compact', 'Padding','compact');
+floorGap = 1e-4;                       % plot floor for the log axes (gap 0 = optimum hit)
+for q = 1:nK
+    rq = R(R(:,1) == q, :); L0 = upper(kinds{q}(1)); kn = [L0 kinds{q}(2:end)];
+    gapR = 100*(yts(q) - yrs(q))/yts(q);   % rival peak, % below the optimum
+    % (a) progress
+    ax = nexttile(tl); hold(ax,'on'); box(ax,'on'); grid(ax,'on');
+    h = gobjects(nI,1);
+    for i = 1:nI
+        g = squeeze(median(G(q,i,:,:), 3));
+        h(i) = plot(ax, 1:B, max(g, floorGap), '-', 'Color', cm(i,:), 'LineWidth', 1.8);
+        xline(ax, nTr(i) + cfg.nTest + 0.5, ':', 'Color', cm(i,:), 'LineWidth', 1);
+    end
+    set(ax, 'YScale','log'); ylim(ax, [1e-3 100]);
+    if isfinite(yrs(q))
+        yline(ax, gapR, '--', 'rival peak', 'Color', orange, 'LabelHorizontalAlignment','left', 'FontSize', 8);
+    end
+    xlabel(ax, 'call number'); ylabel(ax, 'best observed, % below optimum');
+    title(ax, sprintf('%s box: (a) search progress (median)', kn), 'FontWeight','normal');
+    subtitle(ax, 'dotted: end of fixed block (LHS + hold-out)', 'Color', muted);
+    if q == 1, legend(ax, h, compose('nTrain = %d', nTr), 'Location','northeast', 'Box','off'); end
+    % (b) recommendation gap, log axis
+    ax = nexttile(tl); hold(ax,'on'); box(ax,'on'); grid(ax,'on');
+    for i = 1:nI
+        r = rq(rq(:,2) == nTr(i), :);
+        plot(ax, nTr(i) + 0.8*(rand(size(r,1),1) - 0.5), max(r(:,5), floorGap), 'o', 'MarkerSize', 6, ...
+             'MarkerFaceColor', cm(i,:), 'MarkerEdgeColor','w');
+    end
+    med = arrayfun(@(n) median(rq(rq(:,2)==n, 5)), nTr);
+    plot(ax, nTr, max(med, floorGap), '-', 'Color', ink, 'LineWidth', 1.5);
+    set(ax, 'YScale','log'); ylim(ax, [floorGap/2 20]);
+    if isfinite(yrs(q))
+        yline(ax, gapR, '--', 'rival peak', 'Color', orange, 'LabelHorizontalAlignment','left', 'FontSize', 8);
+    end
+    xline(ax, cfg.nTrain, '-', sprintf('chosen %d', cfg.nTrain), 'Color', orange, 'LineWidth', 1.5, ...
+          'LabelVerticalAlignment','bottom', 'FontSize', 8);
+    xlabel(ax, 'nTrain'); ylabel(ax, 'true MCSI at recommendation, % below optimum');
+    title(ax, '(b) Quality of the recommendation', 'FontWeight','normal');
+    subtitle(ax, sprintf('dots = seeds, line = median (0 plotted at %g)', floorGap), 'Color', muted);
+    % (c) first local call, 'never' shown above the budget
+    ax = nexttile(tl); hold(ax,'on'); box(ax,'on'); grid(ax,'on');
+    yNever = B + 3;
+    for i = 1:nI
+        r = rq(rq(:,2) == nTr(i), 6); jit = nTr(i) + 0.8*(rand(size(r)) - 0.5);
+        ok = ~isnan(r);
+        plot(ax, jit(ok), r(ok), 'o', 'MarkerSize', 6, 'MarkerFaceColor', cm(i,:), 'MarkerEdgeColor','w');
+        plot(ax, jit(~ok), yNever*ones(sum(~ok),1), 'x', 'MarkerSize', 8, 'LineWidth', 1.5, 'Color', cm(i,:));
+    end
+    medL = arrayfun(@(n) median(fillmissing(rq(rq(:,2)==n, 6), 'constant', yNever)), nTr);
+    plot(ax, nTr, min(medL, yNever), '-', 'Color', ink, 'LineWidth', 1.5);
+    plot(ax, nTr, nTr + cfg.nTest, '--', 'Color', muted);
+    yline(ax, B + 0.5, '-', 'Color', muted);
+    xline(ax, cfg.nTrain, '-', 'Color', orange, 'LineWidth', 1.5);
+    ylim(ax, [min(nTr) + cfg.nTest - 2, yNever + 2]);
+    yt_ = get(ax, 'YTick'); yt_ = [yt_(yt_ <= B) yNever];
+    set(ax, 'YTick', yt_, 'YTickLabel', [compose('%g', yt_(1:end-1)) {'never'}]);
+    xlabel(ax, 'nTrain'); ylabel(ax, 'first local call');
+    title(ax, '(c) When the optimum was judged found', 'FontWeight','normal');
+    subtitle(ax, 'x = never went local; dashed = end of fixed block', 'Color', muted);
+    % (d) success rate
+    ax = nexttile(tl); hold(ax,'on'); box(ax,'on'); grid(ax,'on');
+    sr = arrayfun(@(n) 100*mean(rq(rq(:,2)==n, 7)), nTr);
+    for i = 1:nI
+        bar(ax, nTr(i), sr(i), 3.5, 'FaceColor', cm(i,:), 'EdgeColor','none');
+        text(ax, nTr(i), sr(i) + 3, sprintf('%d/%d', round(sr(i)*nS/100), nS), ...
+             'HorizontalAlignment','center', 'FontSize', 8, 'Color', ink);
+    end
+    xline(ax, cfg.nTrain, '-', 'Color', orange, 'LineWidth', 1.5);
+    ylim(ax, [0 112]); xlabel(ax, 'nTrain'); ylabel(ax, 'runs ending on the global peak (%)');
+    title(ax, '(d) Found the global optimum', 'FontWeight','normal');
+    if isinf(yrs(q)), st = 'single peak: always 100%';
+    else, st = 'recommendation better than the rival peak'; end
+    subtitle(ax, st, 'Color', muted);
+    for ax = findobj(f, 'Type','axes')'
+        set(ax, 'TickDir','out', 'XColor', muted, 'YColor', muted, 'GridAlpha', 0.15);
+    end
+    set(findobj(f, 'Type','axes'), 'XTick', nTr, 'XLim', [min(nTr)-3, max(nTr)+3]);
+end
+% (a) panels use call number on x, not nTrain
+for ax = tl.Children'
+    if isa(ax, 'matlab.graphics.axis.Axes') && strcmp(ax.XLabel.String, 'call number')
+        set(ax, 'XTickMode','auto'); xlim(ax, [1 B]);
+    end
+end
+for ax = findobj(f, 'Type','axes')'
+    try ax.Toolbar.Visible = 'off'; catch, end
+end
+title(tl, sprintf('Effect of initial sample size (budget %d, %d hold-out, %d seeds per setting)', ...
+      B, cfg.nTest, nS), 'FontWeight','normal', 'Color', ink);
+print(f, 'fig_ntrain_study.png', '-dpng', '-r300');
+fprintf('Saved fig_ntrain_study.png\n');
+end
+
+function cleanup(c)
+for fn = {c.logFile, c.planFile, c.stateFile}
+    if exist(fn{1}, 'file'), delete(fn{1}); end
+end
 end
 
 function worst = selftest(cfg)
@@ -928,7 +1146,7 @@ for i = 1:numel(need)
     if exist(need{i}, 'file'), st = 'found'; else, st = 'MISSING'; end
     fprintf('%-13s %s\n', need{i}, st);
 end
-rng(1, 'twister'); U = rand(30,3); y = fake_box(dn(U,cfg,false)); worst = 0;
+rng(1, 'twister'); U = rand(30,3); y = fake_true(dn(U,cfg,false)); worst = 0;
 % RBF closed-form vs brute force
 for s = {struct('kernel','gaussian','width',0.4,'lambda',1e-10), ...
          struct('kernel','multiquadric','width',0.4,'lambda',1e-3), ...
