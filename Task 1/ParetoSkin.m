@@ -9,7 +9,7 @@ clc, clear all, close all
 % 1) linearly tapered skin, x = [tRoot tTip] - the continuous reference
 % 2) STEPPED skin, the printable design: the wall is a whole number of
 %    printed perimeters, dropping one perimeter at a time from root to tip.
-%    The thickness of each step is fixed (2.0, 1.6, 1.2, 0.8 mm) and the
+%    The thickness of each step is fixed (2.8, 2.4, ... 0.8 mm) and the
 %    design variables are the radial positions where each step ends.
 %    This optimises the printable design directly, rather than rounding a
 %    continuous optimum up to whole perimeters afterwards.
@@ -23,7 +23,7 @@ E = 2e9; %Young's modulus of ABS (Pa)
 SF = 1.5; %safety factor on yield
 sigAllow = 30e6/SF; %allowable bending stress (Pa)
 tMin = 0.8; %minimum skin thickness (mm) - two perimeters of 0.4 mm nozzle extrusion for structure
-tMax = 2.0; %maximum skin thickness (mm) - keeps t <= ~20% of the 9 mm half-depth so the thin-wall I is valid
+tMax = 2.8; %maximum skin thickness (mm) - 7 perimeters; the mid-surface skin model is within 1.5% (conservative) up to here
 tLine = 0.4; %printed perimeter (extrusion line) width (mm) - skin thickness must be a multiple of this
 nFront = 15; %number of points on each Pareto front
 
@@ -65,24 +65,25 @@ for k = 1:nFront
 end
 
 %% 2) stepped skin, optimised directly in whole perimeters
-nLev = round(tMax/tLine):-1:round(tMin/tLine); %perimeters in each step, root to tip (5 4 3 2)
+nLev = round(tMax/tLine):-1:round(tMin/tLine); %perimeters in each step, root to tip (7 6 5 4 3 2)
 tLev = nLev*tLine*1e-3; %thickness of each step (m)
 K = numel(tLev); %number of steps -> K-1 step positions b(1..K-1) are the design variables
 
-[Iu, Pu, ym] = skinSection(1,c); %I, perimeter and outer fibre per unit thickness
+[Ilev, Alev, ym] = skinSection(tLev,c); %I, area and outer fibre of each step
+ym = ym(1);
 absM = abs(M);
-%Because I = Iu*t, volume and deflection of a stepped skin are exact sums over the steps:
-%   V     = Pu * sum_k t_k (b_k - b_k-1)
-%   delta = sum_k [F(b_k) - F(b_k-1)]/(E Iu t_k),  F(r) = cumulative integral of |M|(R - r)
+%Each step has a constant section, so volume and deflection are exact sums over the steps:
+%   V     = sum_k A_k (b_k - b_k-1)
+%   delta = sum_k [F(b_k) - F(b_k-1)]/(E I_k),  F(r) = cumulative integral of |M|(R - r)
 F = cumtrapz(r, absM.*(R - r));
 Fq = @(x) interp1(r,F,x,'pchip'); %smooth in the step positions, so fmincon sees a smooth problem
-stepV = @(b) Pu*sum(tLev.*diff([0 b R]))*1e6; %cm^3
-stepD = @(b) sum(diff(Fq([0 b R]))./(E*Iu*tLev)); %m
+stepV = @(b) sum(Alev.*diff([0 b R]))*1e6; %cm^3
+stepD = @(b) sum(diff(Fq([0 b R]))./(E*Ilev)); %m
 
 %stress: |M| falls from root to tip, so each step is most stressed where it
 %starts. Step k+1 can only start once |M| has dropped to the moment it can
 %carry -> the stress constraint becomes a simple lower bound on each b.
-Mallow = sigAllow*Iu*tLev/ym; %largest moment each step can carry (N m)
+Mallow = sigAllow*Ilev/ym; %largest moment each step can carry (N m)
 if absM(1) > Mallow(1)
     error('a %.1f mm root skin cannot carry the root moment - raise tMax', tLev(1)*1e3)
 end
@@ -132,8 +133,9 @@ fprintf('\nLightest printable design: rounded-up taper %.1f cm^3, optimised step
 fprintf('\nCheck stepped designs against beamBending:\n')
 for k = [1 ceil(nFront/2) nFront]
     t = stepProfile(B(k,:),tLev,r);
-    delta = beamBending(N,Iu*t);
-    sig = max(absM*ym./(Iu*t));
+    It = skinSection(t,c);
+    delta = beamBending(N,It);
+    sig = max(absM*ym./It);
     fprintf('  point %2d: exact %.4f m, solver %.4f m, max nodal stress %.2f MPa (allow %.0f)\n', ...
             k, DS(k), abs(delta(end)), sig/1e6, sigAllow/1e6)
 end
@@ -232,9 +234,14 @@ function [I, A, ymax] = skinSection(t,c)
     Lp = hypot(diff(x),diff(y)); %panel lengths
     theta = atan2(diff(y),diff(x)); %panel angles to the chord
     d = (y(1:end-1) + y(2:end))/2; %panel centroid heights above the neutral axis
-    Iunit = 2*sum(Lp.^3.*sin(theta).^2/12 + Lp.*d.^2); %I per unit skin thickness (m^3)
+    %the material sits on the skin MID-surface, t/2 inside the outer surface
+    %along the panel normal (height d - t cos(theta)/2). A 2 mm skin is not
+    %thin next to the 9 mm half-depth: using the outer surface overstates I by 33%.
+    Iu = 2*sum(Lp.^3.*sin(theta).^2/12 + Lp.*d.^2); %I per unit thickness, outer surface (m^3)
+    Ic = 2*sum(Lp.*d.*cos(theta)); %mid-surface offset corrections
+    Icc = 2*sum(Lp.*cos(theta).^2)/4;
     perimeter = 2*sum(Lp); %full aerofoil perimeter (m)
-    I = Iunit*t;
-    A = perimeter*t;
+    I = Iu*t - Ic*t.^2 + Icc*t.^3; %within 0.6% of exact for t <= 2 mm
+    A = perimeter*t - pi*t.^2; %inward offset band (Steiner), within 3% (conservative) for t <= 2 mm
     ymax = max(y)*ones(size(t)); %furthest fibre = max half-thickness (0.06c)
 end

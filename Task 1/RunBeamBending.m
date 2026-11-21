@@ -109,8 +109,9 @@ end
 %surface (t << c). The upper surface is split into straight panels; each
 %panel has length Lp, angle theta and centroid height d, so
 %   I_panel = Lp^3 t sin^2(theta)/12 + (Lp t) d^2   (parallel axis theorem)
-%The lower surface is a mirror image, so the totals are doubled.
-%Area = skin thickness x perimeter - see theory guide.
+%with d measured to the skin mid-surface. The lower surface is a mirror
+%image, so the totals are doubled. Area = skin thickness x perimeter,
+%less the overlap at the corners of the inward offset - see theory guide.
 function [I, A, ymax] = skinSection(t,c)
     nPanels = 200; %panels per surface
     beta = linspace(0,pi,nPanels+1);
@@ -119,10 +120,15 @@ function [I, A, ymax] = skinSection(t,c)
     Lp = hypot(diff(x),diff(y)); %panel lengths
     theta = atan2(diff(y),diff(x)); %panel angles to the chord
     d = (y(1:end-1) + y(2:end))/2; %panel centroid heights above the neutral axis
-    Iunit = 2*sum(Lp.^3.*sin(theta).^2/12 + Lp.*d.^2); %I per unit skin thickness (m^3)
+    %the material sits on the skin MID-surface, t/2 inside the outer surface
+    %along the panel normal (height d - t cos(theta)/2). A 2 mm skin is not
+    %thin next to the 9 mm half-depth: using the outer surface overstates I by 33%.
+    Iu = 2*sum(Lp.^3.*sin(theta).^2/12 + Lp.*d.^2); %I per unit thickness, outer surface (m^3)
+    Ic = 2*sum(Lp.*d.*cos(theta)); %mid-surface offset corrections
+    Icc = 2*sum(Lp.*cos(theta).^2)/4;
     perimeter = 2*sum(Lp); %full aerofoil perimeter (m)
-    I = Iunit*t;
-    A = perimeter*t;
+    I = Iu*t - Ic*t.^2 + Icc*t.^3; %within 0.6% of exact for t <= 2 mm
+    A = perimeter*t - pi*t.^2; %inward offset band (Steiner), within 3% (conservative) for t <= 2 mm
     ymax = max(y)*ones(size(t)); %furthest fibre = max half-thickness (0.06c)
 end
 

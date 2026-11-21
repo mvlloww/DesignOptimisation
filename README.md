@@ -11,6 +11,7 @@ The task: find the least ABS material for a 3D-printed NACA 0012 blade (chord 0.
 | `RunBeamBending.m` | Analyse one design: thin skin, solid spar, hollow box spar or fully solid blade (set with `structure`). |
 | `ParetoSkin.m` | Volume vs tip-deflection Pareto front for the skin (ε-constraint, `fmincon`): linear taper, then printable stepped skin in whole 0.4 mm perimeters. |
 | `ParetoSpar.m` | Fair comparison of solid spar, hollow box spar and skin fronts (multistart `fmincon`). |
+| `ParetoPrintable.m` | Printable box spar and skin + box hybrid, chosen node by node in whole 0.4 mm perimeters (Lagrangian relaxation + dynamic programming, sections only shrink root to tip). |
 | `report/` | LaTeX write-up of how the code was developed. |
 
 Approach: the blade is statically determinate, so a single `beamBending` call gives the bending moment for every design. Tip deflection is then computed with the unit-load method, which matches the solver to within 0.02%.

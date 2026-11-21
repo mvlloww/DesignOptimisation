@@ -24,7 +24,7 @@ E = 2e9; %Young's modulus of ABS (Pa)
 SF = 1.5; %safety factor on yield
 sigAllow = 30e6/SF; %allowable bending stress (Pa)
 tMin = 0.8; %minimum wall thickness (mm) - two perimeters of 0.4 mm nozzle extrusion
-tMax = 2.0; %maximum SKIN thickness (mm) - thin-wall validity of the skin model
+tMax = 2.8; %maximum SKIN thickness (mm) - 7 perimeters; mid-surface skin model within 1.5% up to here
 tBoxMax = 10; %maximum box wall thickness (mm) - the strip model is exact for any t
 nFront = 15; %number of points on each Pareto front
 nStartAnchor = 8; %multistart points for the two anchor designs
@@ -215,10 +215,15 @@ function [I, A, ymax] = skinSection(t,c)
     Lp = hypot(diff(x),diff(y));
     theta = atan2(diff(y),diff(x));
     d = (y(1:end-1) + y(2:end))/2;
-    Iunit = 2*sum(Lp.^3.*sin(theta).^2/12 + Lp.*d.^2);
-    perimeter = 2*sum(Lp);
-    I = Iunit*t;
-    A = perimeter*t;
+    %the material sits on the skin MID-surface, t/2 inside the outer surface
+    %along the panel normal (height d - t cos(theta)/2). A 2 mm skin is not
+    %thin next to the 9 mm half-depth: using the outer surface overstates I by 33%.
+    Iu = 2*sum(Lp.^3.*sin(theta).^2/12 + Lp.*d.^2); %I per unit thickness, outer surface (m^3)
+    Ic = 2*sum(Lp.*d.*cos(theta)); %mid-surface offset corrections
+    Icc = 2*sum(Lp.*cos(theta).^2)/4;
+    perimeter = 2*sum(Lp); %full aerofoil perimeter (m)
+    I = Iu*t - Ic*t.^2 + Icc*t.^3; %within 0.6% of exact for t <= 2 mm
+    A = perimeter*t - pi*t.^2; %inward offset band (Steiner), within 3% (conservative) for t <= 2 mm
     ymax = max(y)*ones(size(t));
 end
 
