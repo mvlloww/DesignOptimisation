@@ -1,0 +1,350 @@
+% ME52037 Design Optimisation - Task 2: Black-box optimisation of MCSI
+% Compile with pdflatex (e.g. Overleaf). Figures are in ./figures/.
+% Target: 6 pages at 11pt, 2 cm margins.
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parskip}{3pt}
+\setlength{\textfloatsep}{8pt}
+\setlength{\floatsep}{6pt}
+\newcommand{\Qsq}{Q^2}
+
+\title{\vspace{-1.2cm}ME52037 Task 2: Surrogate-Based Optimisation of a 50-Call Black Box}
+\author{Oskar Chu}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.2cm}
+
+%==========================================================
+\section{Problem and strategy}
+%==========================================================
+The black box returns a deterministic marketing score, MCSI ($0$--$10$), for three settings:
+advert spend $x_1\in[0,200]$\,\pounds k, targeting spend $x_2\in[0,60]$\,\pounds k and audience skew $x_3\in[0,1]$, set to precisions of $0.1$, $0.1$ and $0.01$.
+The aim was to maximise MCSI using at most 50 calls.
+No gradient or shape information is available, so every call is expensive.
+The strategy was therefore a \emph{surrogate-based} loop \cite{Forrester2008,Jones1998}: spend a fixed block of calls on a space-filling design, fit and validate a cheap model, then let the model choose each remaining call.
+The budget was split as
+\begin{equation*}
+50 = \underbrace{25}_{\text{LHS training}} + \underbrace{5}_{\text{hold-out}} + \underbrace{17}_{\text{adaptive}} + \underbrace{3}_{\text{confirm}}.
+\end{equation*}
+All of this is implemented in a single MATLAB file, \texttt{bb\_session.m}, which logs every call, rebuilds the model after each reading, and can be resumed or undone.
+Figure~\ref{fig:flow} shows the workflow.
+The same code was rehearsed on synthetic ``fake boxes'' before the real session (Section~\ref{sec:verify}).
+
+\begin{figure}[t]
+\centering
+\IfFileExists{figures/flowchart.png}{%
+  \includegraphics[width=\textwidth]{figures/flowchart.png}}{%
+  \fbox{\parbox[c][4.5cm][c]{0.95\textwidth}{\centering
+  [Insert FigJam ``FINAL FLOW'' export here as \texttt{figures/flowchart.png}]}}}
+\caption{Session workflow. Steps that use no box calls (planning, model building and the inner maximisation) are separated from the outer loop, which spends one call per iteration.}
+\label{fig:flow}
+\end{figure}
+
+%==========================================================
+\section{Initial sampling plan (calls 1--30)}
+%==========================================================
+\textbf{Size.}
+The 10$d$ rule of thumb (Jones et al.~\cite{Jones1998}, examined by Loeppky et al.~\cite{Loeppky2009}) gives 30 points for $d=3$.
+This was used as 25 training points plus 5 hold-out points, which leaves 20 calls (40\% of the budget) for adaptive search.
+A sweep of the initial size on fake boxes (Figure~\ref{fig:ntrain}) supports this choice.
+On a smooth single-peaked function, any $n_\text{train}$ between 10 and 30 ended within 0.1\% of the optimum.
+At $n_\text{train}=35$ too few adaptive calls remained, and the search never switched to local refinement.
+
+\textbf{Design.}
+Inputs were scaled to the unit cube.
+200 maximin Latin hypercubes \cite{McKay1979,Johnson1990} were generated with \texttt{lhsdesign}, each keeping the best of 50 random draws.
+These were ranked jointly on minimum point-to-point distance (spread) and $L_2$-star discrepancy (uniformity) \cite{Warnock1972}.
+The best plan was snapped to the setting precision.
+LHS was preferred to a Halton sequence \cite{Kocis1997} because it guarantees one point per 1-D stratum in every input, so no setting range is left unsampled.
+It also has no low-$n$ correlation artefacts, which unscrambled Halton points show in early dimensions.
+The comparison over 100 draws per method (Table~\ref{tab:plan}) confirms this.
+Scrambled Halton left a median of 8 empty 1-D slices, whereas every LHS variant left none.
+The screened plan beats 97\% of single maximin LHS draws and all Halton draws on minimum distance.
+
+\begin{table}[h]
+\centering\small
+\caption{Sampling plan quality, $n=25$, $d=3$ (medians of 100 draws; ``empty slices'' are unoccupied 1-D strata).}
+\label{tab:plan}
+\begin{tabular}{lcccc}
+\toprule
+Plan & Min.\ distance $\uparrow$ & $L_2$-star $\downarrow$ & $D^*$ $\downarrow$ & Empty slices \\
+\midrule
+Random & 0.084 & 0.0548 & 0.275 & 27 \\
+Random LHS & 0.117 & 0.0354 & 0.176 & 0 \\
+Maximin LHS (single) & 0.181 & 0.0346 & 0.173 & 0 \\
+Scrambled Halton & 0.154 & 0.0307 & 0.158 & 8 \\
+\textbf{Chosen (screened maximin LHS)} & \textbf{0.219} & \textbf{0.0263} & \textbf{0.138} & \textbf{0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Hold-out points.}
+Five extra points were placed greedily in the largest gaps of the design, which lie mostly near edges and corners.
+They give an unbiased test of the model chosen on the 25 training points.
+LOOCV alone is optimistically biased once it has been used to select the model \cite{Cawley2010}.
+Because the gaps lie at the edges, the hold-out set acts as a worst-case extrapolation check.
+After call 30 the hold-out points join the training data.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_ntrain_study.png}
+\caption{Effect of initial sample size on an easy (top) and a deceptive two-peak (bottom) fake box, with 5 seeds per setting. (b) shows recommendation quality, (c) the call at which local refinement started and (d) the success rate. The chosen value $n_\text{train}=25$ is marked.}
+\label{fig:ntrain}
+\end{figure}
+
+%==========================================================
+\section{Surrogate modelling and validation (every call, 0 box calls)}
+%==========================================================
+Before every fit, points closer than the setting precision are merged.
+Inputs are scaled to $[0,1]$ and MCSI is standardised.
+Nine candidate models are then fitted:
+\begin{itemize}
+\setlength{\itemsep}{0pt}
+\item \textbf{Polynomials} (linear, quadratic, cubic) via \texttt{fitlm}, with exact leave-one-out residuals from leverage (PRESS \cite{Allen1971}).
+\item \textbf{RBFs} with a linear tail and five kernels: Gaussian, multiquadric, inverse multiquadric, cubic and thin-plate. Each width is tuned by Rippa's closed-form LOOCV \cite{Rippa1999}.
+\item \textbf{Kriging} via \texttt{fitrgp}, with an ARD squared-exponential kernel, a constant mean and a fixed near-zero nugget, since the box is deterministic \cite{Sacks1989,Rasmussen2006}.
+\end{itemize}
+The model with the lowest LOOCV normalised RMSE is selected.
+Its quality is reported as
+\begin{equation}
+\Qsq = 1-\frac{\sum_i \left(y_i-\hat y_{-i}\right)^2}{\sum_i \left(y_i-\bar y\right)^2}
+     = 1-\text{NRMSE}^2\,\frac{n}{n-1},
+\end{equation}
+where $\hat y_{-i}$ is the prediction at point $i$ with that point removed.
+$\Qsq$ is a predictive measure: unlike $R^2$, an interpolating model cannot score 1 on it trivially.
+No single model family is best for every response \cite{Forrester2008}.
+Selecting automatically at each call let the model change as data accumulated.
+This happened in the session: inverse multiquadric RBF $\rightarrow$ Kriging $\rightarrow$ Gaussian and inverse multiquadric RBFs.
+
+%==========================================================
+\section{Inner level: maximising the surrogate (0 box calls)}
+%==========================================================
+The surrogate is cheap but can be multimodal, so it is maximised in three stages:
+\begin{enumerate}
+\setlength{\itemsep}{0pt}
+\item A $21^3$ grid (9{,}261 points) is evaluated. The spacing of 0.05 in scaled units equals 10\,\pounds k, 3\,\pounds k and 0.05 skew, and the odd count includes the bounds.
+\item Up to 6 of the best grid points are kept as seeds, each at least 0.25 apart. This places starts in different basins rather than six starts on the same peak.
+\item \texttt{MultiStart} runs \texttt{fmincon} (SQP) from those seeds as a custom start-point set \cite{MathWorksMS}.
+\end{enumerate}
+SQP suits a smooth, bounded 3-variable problem: it converges superlinearly and respects bounds exactly \cite{Nocedal2006}.
+Fixed seeds make the result deterministic.
+Distinct optima more than 0.15 apart are kept: the best is the \emph{surrogate optimum}, and the others are \emph{rivals}, used by the outer level.
+A sensitivity check (\texttt{maxcheck}) re-solved the final model with $11^3$--$41^3$ grids and 3--12 seeds.
+Every combination returned the same optimum [130, 41.6, 0.30] to within $10^{-12}$ in predicted MCSI, in under 0.3\,s.
+The default settings are therefore converged.
+
+%==========================================================
+\section{Outer level: choosing the next call}
+%==========================================================
+Each adaptive call is assigned one of four modes, checked in priority order:
+\begin{enumerate}
+\setlength{\itemsep}{0pt}
+\item \textbf{Confirm} (3 or fewer calls left).
+  The first two confirm calls step $+5\%$ of range in $x_1$ and then $x_2$ from the best measured point, to check that it is a true local maximum.
+  The last confirm call measures the final surrogate optimum.
+\item \textbf{Local} (once entered, the search stays local).
+  The next point is the most isolated candidate inside the near-optimal box: the region within 2\% of range of the predicted maximum.
+  Local mode is entered only when all of the checks in the box pass.
+
+  \smallskip\noindent
+  \fcolorbox{black}{gray!10}{\begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}
+  \textbf{Decision checks for entering local mode (all must pass)}
+  \begin{enumerate}
+  \setlength{\itemsep}{0pt}
+  \item \textbf{Stable:} adding the latest point moved the surrogate optimum by less than 0.02 in scaled units.
+  \item \textbf{Accurate:} the last exploit or local call was predicted to within 1\% of the observed MCSI range.
+  \item \textbf{No rival:} no second surrogate peak is predicted within 5\% of range of the best one.
+  \item \textbf{Explored:} at least two explore calls have been made, and none beat the predicted optimum.
+  \item \textbf{Budget:} at least 6 calls remain before the 3 confirm calls.
+  \end{enumerate}
+  \end{minipage}}
+  \smallskip
+\item \textbf{Exploit.} Query the surrogate optimum.
+\item \textbf{Explore.} Query the most isolated point of 20{,}000 random candidates.
+  The candidates are restricted to the top 25\% of predicted MCSI on alternate explore calls, and taken from anywhere in the domain on the others.
+\end{enumerate}
+Exploit and explore alternate in a cycle, as in Regis and Shoemaker's cycling of exploitation weights \cite{Regis2005}.
+The cycle is exploit--exploit--explore when $\Qsq\geq0.8$ and no rival exists, otherwise exploit--explore.
+A weak model therefore spends more of its calls exploring.
+If the exploit point has already been sampled, the call becomes an explore.
+The ``anywhere'' explore was added after rehearsals on a deceptive box, where a narrow global peak was hidden outside the high-prediction region.
+After each call the actual settings, the prediction made before the call and the model code are logged.
+The predict-then-query error is therefore a genuine out-of-sample test at every step.
+
+\textbf{Recommendation.}
+The final recommendation is the \emph{best measured} point, not the unmeasured surrogate optimum.
+The box is deterministic, so a measured value carries no model error.
+Measuring the surrogate optimum on the last call means the two coincide when the model is right.
+
+%==========================================================
+\section{Verification before the session}
+\label{sec:verify}
+%==========================================================
+\begin{itemize}
+\setlength{\itemsep}{0pt}
+\item \textbf{Self-test.} The fast LOOCV formulas (PRESS for polynomials, Rippa for RBFs) were checked against brute-force refitting and matched to machine precision. Required toolboxes were confirmed present.
+\item \textbf{Easy fake box} (smooth, single peak). Full rehearsals found the optimum within $<0.1\%$ for $n_\text{train}\le30$ (Figure~\ref{fig:ntrain}, top).
+\item \textbf{Hard fake box.} This box has a broad rival peak of 8.58 and a narrow global peak of 9.00, both clipped to $[0,10]$ and rounded like the real box. Only 0--2 of 5 runs found the narrow peak (Figure~\ref{fig:ntrain}, bottom). This exposed a real limitation: a narrow peak lying between 25 samples is close to invisible. It motivated the explore-anywhere call and the measured recommendation, so the method at least never recommends a point worse than one already seen.
+\end{itemize}
+
+%==========================================================
+\section{Results of the real session}
+%==========================================================
+\textbf{Fixed block.}
+The best LHS reading was 2.46 (run 16).
+At call 30, LOOCV on the 25 training points selected the multiquadric RBF, but with only $\Qsq=0.62$.
+The hold-out test (Table~\ref{tab:holdout}) disagreed with that ranking.
+The Gaussian RBF and Kriging generalised best to the edge points, while the multiquadric RBF did not.
+This illustrates the selection bias the hold-out was designed to expose.
+All five hold-out readings were $\approx0$, and every model under-predicted them, some below zero.
+This is a sign of extrapolation at the domain edges rather than of an error in the interior.
+
+\begin{table}[h]
+\centering\small
+\caption{Model check at call 30: trained on 25 LHS points, tested on the 5 hold-out points (NRMSE normalised by range).}
+\label{tab:holdout}
+\begin{tabular}{lccc}
+\toprule
+Model & LOO NRMSE & LOO $\Qsq$ & Hold-out NRMSE \\
+\midrule
+RBF multiquadric (selected) & 0.605 & 0.618 & 0.588 \\
+RBF inverse multiquadric & 0.614 & 0.607 & 0.353 \\
+RBF Gaussian & 0.649 & 0.562 & \textbf{0.283} \\
+Kriging (ARD SE) & 0.737 & 0.434 & 0.294 \\
+Polynomial quadratic & 0.770 & 0.382 & 0.854 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Adaptive calls.}
+With $\Qsq<0.8$ the search started on the 1:1 cycle.
+The first exploit (call 31) jumped to MCSI 3.98, against a prediction of 2.88, so the model under-predicted the peak by 27\% of range.
+After refitting, Kriging was selected ($\Qsq=0.91$).
+Its next exploit (call 32) read 4.03, within 0.5\% of its prediction.
+Two explores followed, one in the top 25\% region (0.84) and one anywhere (0.31).
+Neither found a better region.
+With all decision checks passed, local refinement began at call 35.
+During refinement, two manual explore overrides (calls 40 and 43) were spent re-testing distant regions for a missed peak; both returned below 0.9.
+Local calls 35--47 all read 3.82--4.00.
+Their prediction errors fell from about 2\% to below 0.2\% of range (Table~\ref{tab:calls}).
+
+\begin{table}[h]
+\centering\small
+\caption{Adaptive and confirm calls. Error $=(y-\hat y)/\text{range}$, where $\hat y$ is predicted before the call. Models: IMQ/Gau = RBF inverse multiquadric/Gaussian, Krig = Kriging.}
+\label{tab:calls}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{rlccccrl@{\hspace{1.2em}}rlccccrl}
+\toprule
+Run & Mode & $x_1$ & $x_2$ & $x_3$ & $y$ & Err\% & Mdl &
+Run & Mode & $x_1$ & $x_2$ & $x_3$ & $y$ & Err\% & Mdl\\
+\midrule
+31 & exploit & 134.3 & 43.1 & 0.26 & 3.981 & $+27.2$ & IMQ  & 41 & local   & 122.1 & 39.2 & 0.27 & 3.945 & $+1.3$ & Gau\\
+32 & exploit & 130.3 & 42.5 & 0.28 & 4.030 & $+0.5$  & Krig & 42 & local   & 131.1 & 41.3 & 0.35 & 4.003 & $-0.1$ & IMQ\\
+33 & explore & 149.4 & 58.5 & 0.00 & 0.840 & $-10.1$ & Krig & 43 & expl.*  & 198.9 & 22.2 & 0.87 & 0.060 & $-4.5$ & IMQ\\
+34 & expl.\,any & 4.0 & 30.5 & 0.98 & 0.310 & $-6.0$ & Krig & 44 & local   & 120.4 & 44.6 & 0.25 & 3.867 & $+0.9$ & IMQ\\
+35 & local   & 120.5 & 38.7 & 0.34 & 3.907 & $+1.8$  & Krig & 45 & local   & 132.8 & 38.3 & 0.30 & 3.974 & $-0.1$ & IMQ\\
+36 & local   & 141.7 & 38.6 & 0.35 & 3.871 & $+0.5$  & Krig & 46 & local   & 140.8 & 41.7 & 0.31 & 3.976 & $-0.2$ & IMQ\\
+37 & local   & 141.2 & 37.9 & 0.25 & 3.818 & $-0.3$  & Krig & 47 & local   & 119.5 & 42.1 & 0.30 & 3.981 & $+0.1$ & IMQ\\
+38 & local   & 141.1 & 44.6 & 0.35 & 3.863 & $+0.7$  & Krig & 48 & conf.\,$+x_1$ & 140.3 & 42.5 & 0.28 & 3.964 & $0.0$ & IMQ\\
+39 & local   & 122.1 & 44.6 & 0.35 & 3.907 & $+1.5$  & Krig & 49 & conf.\,$+x_2$ & 130.3 & 45.5 & 0.28 & 3.935 & $0.0$ & IMQ\\
+40 & expl.*  & 196.2 & 57.3 & 0.33 & 0.841 & $-11.9$ & Gau  & \textbf{50} & \textbf{conf.\,opt} & \textbf{130.0} & \textbf{41.6} & \textbf{0.30} & \textbf{4.048} & $0.0$ & Gau\\
+\bottomrule
+\multicolumn{16}{l}{\footnotesize * manual explore override during local refinement.}
+\end{tabular}
+\end{table}
+
+\textbf{Confirmation and recommendation.}
+Stepping $+5\%$ of range from the best point at that time (call 32) lowered MCSI by 1.6\% in $x_1$ and 2.4\% in $x_2$.
+This confirms that the best point lies on a local maximum, not a slope.
+The final call measured the surrogate optimum at 4.0482, against a prediction of 4.0487, and became the best reading of the session.
+
+\begin{center}
+\fbox{\parbox{0.92\textwidth}{\centering
+\textbf{Recommended setting:} $x_1=130.0$\,\pounds k, $x_2=41.6$\,\pounds k, $x_3=0.30$ \quad$\Rightarrow$\quad \textbf{measured MCSI = 4.0482} (run 50).\\
+Worst case if each setting is off by one precision step: 4.0439 predicted ($-0.11\%$).}}
+\end{center}
+
+The final model is a Gaussian RBF with LOOCV $\Qsq=0.985$; the inverse multiquadric RBF (0.983) and Kriging (0.972) score almost the same, so the conclusion does not depend on the model choice.
+The parity plot (Figure~\ref{fig:final}, left) is tight near the optimum, where 16 points read above 3.8 (within 6\% of the maximum).
+The largest scatter is at low MCSI.
+The slices (Figure~\ref{fig:final}, right) show a single interior peak.
+Advert and targeting are optimal at about 65--70\% of range, and skew is optimal at about 30\%.
+Skew is the most sensitive setting: MCSI falls to near zero at high skew.
+Relative to the best LHS point, the adaptive phase improved MCSI by 64\%.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.37\textwidth]{figures/fig_parity.png}\hfill
+\includegraphics[width=0.61\textwidth]{figures/fig_final_model.png}
+\caption{Final model (RBF Gaussian, $s=0.357$, $\Qsq=0.985$, 50 points). Left: LOOCV parity. Right: slices through the recommendation and 1-D sensitivities. White points are the fixed design, orange points are adaptive calls and the star is the recommendation. The black contour bounds the region within 2\% of range of the maximum.}
+\label{fig:final}
+\end{figure}
+
+%==========================================================
+\section{Discussion and limitations}
+%==========================================================
+\textbf{What worked.}
+After the first exploit, predict-then-query errors at exploit and local calls stayed below 2\% of range.
+The rigorous decision checks prevented premature local search: two explores were completed and failed to beat the optimum first.
+In the end the measured and predicted optima agreed to $5\times10^{-4}$.
+The model was robust to the choice of inner optimiser settings and nearly robust to the choice of model.
+
+\textbf{Weak early model.}
+At call 30, $\Qsq=0.62$ was low, and the hold-out check preferred different models.
+The first exploit still found the right region, because even a poorly scaled model located the peak correctly.
+Its magnitude was wrong by 27\% of range.
+With hindsight, overriding the selected model at call 30 with the hold-out winner (Gaussian RBF or Kriging) would have been justified.
+
+\textbf{Possible missed peak.}
+The recommended MCSI of 4.05 is only 40\% of the 0--10 scale.
+This may simply be the true maximum, but it cannot be proven from 50 samples.
+The hard-box rehearsal showed that a narrow peak between samples can be missed.
+Against that, four explores spread across the domain (calls 33, 34, 40 and 43) all read below 0.9, and every hold-out and LHS corner point was low.
+Any undiscovered peak would therefore have to be narrower than the sample spacing of roughly 0.2 in scaled units.
+
+\textbf{Modelling choices.}
+The models allow negative predictions, as seen at the hold-out points, although MCSI is non-negative.
+Modelling $\log(y+\epsilon)$ or clipping predictions would fix this, but it does not affect the optimum, which lies far from zero.
+The local phase spent 13 calls refining a region already within 6\% of the optimum.
+A trust-region step \cite{Forrester2008} or an expected-improvement criterion \cite{Jones1998} could have released some of those calls for further exploration.
+Kriging was used even though the course notes cover RBFs.
+It was included because it is the standard surrogate for deterministic computer experiments \cite{Sacks1989}, and LOOCV ranked it fairly against the others.
+
+%==========================================================
+\section{Conclusion}
+%==========================================================
+A screened maximin LHS, automatic LOOCV model selection with an independent hold-out check, a deterministic multistart inner optimiser and a rule-based exploit/explore/local/confirm outer loop together located a well-defined interior optimum within 50 calls.
+The recommended setting $[130.0, 41.6, 0.30]$ gives a \emph{measured} MCSI of 4.0482.
+It was confirmed as a local maximum by $\pm5\%$ steps and is insensitive to one-step setting errors.
+The final surrogate is accurate ($\Qsq=0.985$).
+The main residual risk, a narrow peak elsewhere, was tested by rehearsal and four domain-wide explores, and it is stated rather than assumed away.
+
+\small
+\begin{thebibliography}{99}
+\setlength{\itemsep}{0pt}
+\bibitem{Allen1971} D.~M.~Allen, ``The prediction sum of squares as a criterion for selecting predictor variables,'' Tech.\ Rep.\ 23, Dept.\ of Statistics, Univ.\ of Kentucky, 1971.
+\bibitem{Cawley2010} G.~C.~Cawley and N.~L.~C.~Talbot, ``On over-fitting in model selection and subsequent selection bias in performance evaluation,'' \emph{J.\ Mach.\ Learn.\ Res.}, 11:2079--2107, 2010.
+\bibitem{Forrester2008} A.~I.~J.~Forrester, A.~S\'obester and A.~J.~Keane, \emph{Engineering Design via Surrogate Modelling}, Wiley, 2008.
+\bibitem{Johnson1990} M.~E.~Johnson, L.~M.~Moore and D.~Ylvisaker, ``Minimax and maximin distance designs,'' \emph{J.\ Stat.\ Plan.\ Inference}, 26:131--148, 1990.
+\bibitem{Jones1998} D.~R.~Jones, M.~Schonlau and W.~J.~Welch, ``Efficient global optimization of expensive black-box functions,'' \emph{J.\ Global Optim.}, 13:455--492, 1998.
+\bibitem{Kocis1997} L.~Kocis and W.~J.~Whiten, ``Computational investigations of low-discrepancy sequences,'' \emph{ACM Trans.\ Math.\ Softw.}, 23(2):266--294, 1997.
+\bibitem{Loeppky2009} J.~L.~Loeppky, J.~Sacks and W.~J.~Welch, ``Choosing the sample size of a computer experiment: a practical guide,'' \emph{Technometrics}, 51(4):366--376, 2009.
+\bibitem{MathWorksMS} The MathWorks, ``MultiStart'' and ``fmincon'', Global Optimization / Optimization Toolbox documentation, R2025b.
+\bibitem{McKay1979} M.~D.~McKay, R.~J.~Beckman and W.~J.~Conover, ``A comparison of three methods for selecting values of input variables in the analysis of output from a computer code,'' \emph{Technometrics}, 21(2):239--245, 1979.
+\bibitem{Nocedal2006} J.~Nocedal and S.~J.~Wright, \emph{Numerical Optimization}, 2nd ed., Springer, 2006.
+\bibitem{Rasmussen2006} C.~E.~Rasmussen and C.~K.~I.~Williams, \emph{Gaussian Processes for Machine Learning}, MIT Press, 2006.
+\bibitem{Regis2005} R.~G.~Regis and C.~A.~Shoemaker, ``Constrained global optimization of expensive black box functions using radial basis functions,'' \emph{J.\ Global Optim.}, 31:153--171, 2005.
+\bibitem{Rippa1999} S.~Rippa, ``An algorithm for selecting a good value for the parameter $c$ in radial basis function interpolation,'' \emph{Adv.\ Comput.\ Math.}, 11:193--210, 1999.
+\bibitem{Sacks1989} J.~Sacks, W.~J.~Welch, T.~J.~Mitchell and H.~P.~Wynn, ``Design and analysis of computer experiments,'' \emph{Statist.\ Sci.}, 4(4):409--435, 1989.
+\bibitem{Warnock1972} T.~T.~Warnock, ``Computational investigations of low-discrepancy point sets,'' in \emph{Applications of Number Theory to Numerical Analysis}, Academic Press, 1972, pp.~319--343.
+\end{thebibliography}
+
+\end{document}

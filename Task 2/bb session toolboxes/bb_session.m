@@ -6,6 +6,8 @@ function out = bb_session(cmd, varargin)
 %   bb_session('status')    model table, decision checks, figures
 %   bb_session('undo')      delete the last logged row (typo fix)
 %   bb_session('figure')    report figure of the final model (fig_final_model.png)
+%   bb_session('convplot')  best-so-far MCSI vs call, coloured by mode (fig_convergence.png)
+%   bb_session('figrow')    compact version: 2 slices + 1-D sensitivity in one row (fig_final_slices.png)
 %   bb_session('rehearse')  full dry run on a fake function (deletes log!)
 %   bb_session('selftest')  check toolboxes + closed-form LOOCV vs brute force
 %   bb_session('maxcheck')  sensitivity of the surrogate optimum to grid size
@@ -59,6 +61,11 @@ switch lower(cmd)
     case 'figure'
         L = load_log(cfg); F = fit_best(L, cfg); uS = maximise(F.m);
         final_figure(L, F, uS, cfg);
+    case 'figrow'
+        L = load_log(cfg); F = fit_best(L, cfg); uS = maximise(F.m);
+        final_figure_row(L, F, uS, cfg);
+    case 'convplot'
+        L = load_log(cfg); conv_figure(L, cfg);
     case 'rehearse', out = rehearse(cfg, varargin{:});
     case 'selftest', out = selftest(cfg);
     case 'maxcheck', out = maxcheck(cfg);
@@ -572,6 +579,129 @@ fprintf('Saved fig_final_model.png\n');
 fprintf('Caption info: %s (LOOCV Q2 = %.3f), %d samples; recommended (best measured) [%g, %g, %g], measured MCSI %.4g;\n', ...
         F.name, F.q2, size(L,1), xs, L(ib,6));
 fprintf('  surrogate optimum [%g, %g, %g]; slices pass through the recommendation; all samples projected onto each slice.\n', xo);
+end
+
+function conv_figure(L, cfg)
+% Convergence figure: every reading coloured by mode, best-so-far as a step line.
+n = size(L,1); k = (1:n)'; y = L(:,6); ph = L(:,2); best = cummax(y);
+ink = [0.12 0.12 0.12]; muted = [0.45 0.45 0.45];
+% mode groups: {phases, label, face colour, marker}
+G = {1,     'LHS (fixed)',        [1 1 1],             'o';
+     2,     'hold-out (fixed)',   [0.75 0.75 0.75],    's';
+     4,     'exploit',            [42 120 214]/255,    'o';
+     [5 8], 'explore',            [235 104 52]/255,    'd';
+     6,     'local',              [27 175 122]/255,    'o';
+     7,     'confirm',            [120 80 180]/255,    '^'};
+f = figure('Color','w', 'Position', [100 100 1300 430]);
+ax = axes(f, 'Position', [0.06 0.16 0.74 0.76]); hold(ax,'on'); box(ax,'on'); grid(ax,'on');
+nFix = cfg.nTrain + cfg.nTest;
+yl = [0, 1.12*max(y)];
+patch(ax, [0.5 nFix+0.5 nFix+0.5 0.5], yl([1 1 2 2]), [0.93 0.93 0.93], 'EdgeColor','none');
+text(ax, (nFix+1)/2, yl(2)*0.97, 'fixed block (LHS + hold-out)', 'HorizontalAlignment','center', ...
+     'VerticalAlignment','top', 'Color', muted, 'FontSize', 10);
+text(ax, (nFix+n+1)/2, yl(2)*0.97, 'adaptive', 'HorizontalAlignment','center', ...
+     'VerticalAlignment','top', 'Color', muted, 'FontSize', 10);
+hb = stairs(ax, [k; n+0.5], [best; best(end)], '-', 'Color', ink, 'LineWidth', 2);
+H = hb; nm = {'best so far'};
+for g = 1:size(G,1)
+    m = ismember(ph, G{g,1}); if ~any(m), continue; end
+    H(end+1) = plot(ax, k(m), y(m), G{g,4}, 'MarkerSize', 7, 'MarkerFaceColor', G{g,3}, ...
+                    'MarkerEdgeColor', ink, 'LineWidth', 0.6); %#ok<AGROW>
+    nm{end+1} = G{g,2}; %#ok<AGROW>
+end
+% annotations: best of the fixed block, first jump, final
+[bF, iF] = max(y(1:nFix));
+text(ax, nFix, bF, sprintf('  LHS best %.2f ', bF), 'HorizontalAlignment','right', ...
+     'VerticalAlignment','bottom', 'FontSize', 10, 'Color', ink);
+plot(ax, iF, bF, 'o', 'MarkerSize', 11, 'MarkerEdgeColor', ink, 'LineWidth', 1.2);
+i1 = find(best > bF, 1);
+if ~isempty(i1)
+    text(ax, i1+0.4, y(i1)-0.12, sprintf('call %d: %.2f', i1, y(i1)), 'VerticalAlignment','top', ...
+         'FontSize', 10, 'Color', ink);
+end
+[bA, iA] = max(y);
+text(ax, iA, bA+0.1, sprintf('%.4f', bA), 'HorizontalAlignment','right', 'VerticalAlignment','bottom', ...
+     'FontSize', 10, 'Color', ink, 'FontWeight','bold');
+xlim(ax, [0.5 n+0.5]); ylim(ax, yl); xticks(ax, [1 5:5:n]);
+xlabel(ax, 'call number'); ylabel(ax, 'MCSI');
+set(ax, 'Layer','top', 'TickDir','out', 'XColor', muted, 'YColor', muted, 'GridAlpha', 0.15, 'FontSize', 11);
+lg = legend(ax, H, nm, 'Box','off', 'FontSize', 11);
+set(lg, 'Position', [0.82 0.3 0.15 0.5]);
+print(f, 'fig_convergence.png', '-dpng', '-r300');
+fprintf('Saved fig_convergence.png (LHS best %.4f at call %d; best %.4f at call %d)\n', bF, iF, bA, iA);
+end
+
+function final_figure_row(L, F, uS, cfg)
+% Compact report figure in one row: (a) x1-x2 slice, (b) x1-x3 slice (one
+% shared colour bar), (c) MCSI along each input through the recommendation.
+blue = [205 226 251; 158 197 244; 109 167 236; 57 135 229; 37 106 191; 24 79 149; 13 54 107]/255;
+cmap = interp1(linspace(0,1,7), blue, linspace(0,1,256));
+ser  = [42 120 214; 235 104 52; 27 175 122]/255;
+orange = ser(2,:); ink = [0.12 0.12 0.12]; muted = [0.45 0.45 0.45];
+ib = best_obs(L); xs = L(ib,3:5); us = nrm(xs, cfg); ys = spredict(F.m, us);
+xo = dn(uS, cfg); showOpt = any(abs(xo - xs) > 1e-9);   % mark surrogate optimum only if a different setting
+thr = spredict(F.m, uS) - cfg.nearOptFrac * range_(L(:,6));
+g = linspace(0, 1, 80); pr = [1 2 3; 1 3 2];
+Z = cell(2,1); AB = cell(2,1);
+for p = 1:2
+    a = pr(p,1); b = pr(p,2); c = pr(p,3);
+    [A,B] = meshgrid(g,g); Q = zeros(numel(A),3); Q(:,a) = A(:); Q(:,b) = B(:); Q(:,c) = us(c);
+    Z{p} = reshape(spredict(F.m, Q), size(A)); AB{p} = {A, B};
+end
+clim_ = [min(cellfun(@(z) min(z(:)), Z)), max(cellfun(@(z) max(z(:)), Z))];
+fixed = L(:,2) <= 3; adapt = ~fixed;
+
+f = figure('Color','w', 'Position', [100 100 1500 470]);
+w = 0.25; h = 0.68; y0 = 0.2; x0 = [0.05 0.355 0.725];
+for p = 1:2
+    a = pr(p,1); b = pr(p,2); c = pr(p,3);
+    ax = axes('Position', [x0(p) y0 w h]); hold(ax,'on'); box(ax,'on');
+    Xa = cfg.lb(a) + AB{p}{1}*(cfg.ub(a)-cfg.lb(a));
+    Xb = cfg.lb(b) + AB{p}{2}*(cfg.ub(b)-cfg.lb(b));
+    contourf(ax, Xa, Xb, Z{p}, 16, 'LineColor','none');
+    [~, h1] = contour(ax, Xa, Xb, Z{p}, [thr thr], 'LineColor', ink, 'LineWidth', 1.5);
+    h2 = plot(ax, L(fixed,2+a), L(fixed,2+b), 'o', 'MarkerSize', 5, 'MarkerFaceColor','w', 'MarkerEdgeColor', ink);
+    h3 = plot(ax, L(adapt,2+a), L(adapt,2+b), 'o', 'MarkerSize', 5, 'MarkerFaceColor', orange, 'MarkerEdgeColor','w');
+    if showOpt
+        h5 = plot(ax, xo(a), xo(b), 'x', 'MarkerSize', 11, 'LineWidth', 2, 'Color', [200 40 40]/255);
+    end
+    h4 = plot(ax, xs(a), xs(b), 'p', 'MarkerSize', 16, 'MarkerFaceColor', ink, 'MarkerEdgeColor','w');
+    if p == 1
+        H = [h1 h2 h3 h4];
+        nm = {sprintf('near-optimal region (within %.0f%% of range of max)', 100*cfg.nearOptFrac), ...
+              'fixed design (LHS + hold-out)', 'adaptive calls', 'recommended (best measured)'};
+        if showOpt, H(end+1) = h5; nm{end+1} = 'surrogate optimum'; end
+        ax1 = ax;
+    end
+    colormap(ax, cmap); caxis(ax, clim_);
+    xlabel(ax, cfg.names{a}); ylabel(ax, cfg.names{b});
+    if c == 3, sv = sprintf('%.2f', xs(c)); else, sv = sprintf('%.1f', xs(c)); end
+    title(ax, sprintf('(%c) slice at %s = %s', 'a'+p-1, cfg.names{c}, sv), 'FontWeight','normal');
+    set(ax, 'Layer','top', 'TickDir','out', 'XColor', muted, 'YColor', muted, 'FontSize', 11);
+    set(ax, 'Position', [x0(p) y0 w h]);
+end
+cb = colorbar(ax); ylabel(cb, 'predicted MCSI');
+set(cb, 'Position', [x0(2)+w+0.01, y0, 0.011, h]);
+set(ax, 'Position', [x0(2) y0 w h]);
+lg = legend(ax1, H, nm, 'Orientation','horizontal', 'Box','off', 'FontSize', 11);
+set(lg, 'Position', [0.05 0.01 0.9 0.06]);
+
+% (c) one-at-a-time sensitivity through the recommendation
+ax = axes('Position', [x0(3) y0 w h]); hold(ax,'on'); box(ax,'on'); grid(ax,'on');
+t = linspace(0,1,200)';
+for k = 1:3
+    Q = repmat(us, numel(t), 1); Q(:,k) = t;
+    plot(ax, 100*t, spredict(F.m, Q), '-', 'Color', ser(k,:), 'LineWidth', 2);
+end
+plot(ax, [0 100], [thr thr], '--', 'Color', muted, 'LineWidth', 1);
+plot(ax, 100*us, ys*[1 1 1], 'p', 'MarkerSize', 12, 'MarkerFaceColor', ink, 'MarkerEdgeColor','w');
+xlabel(ax, 'input setting (% of range)'); ylabel(ax, 'predicted MCSI');
+title(ax, '(c) each input varied alone', 'FontWeight','normal');
+legend(ax, {cfg.names{:}, 'near-optimal'}, 'Location','south', 'Box','off', 'FontSize', 9);
+set(ax, 'TickDir','out', 'XColor', muted, 'YColor', muted, 'GridAlpha', 0.15, 'FontSize', 11);
+set(ax, 'Position', [x0(3) y0 w h]);
+print(f, 'fig_final_slices.png', '-dpng', '-r300');
+fprintf('Saved fig_final_slices.png\n');
 end
 
 % =====================================================================
