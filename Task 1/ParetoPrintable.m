@@ -88,19 +88,19 @@ fprintf('Printable Pareto fronts for %d concepts in %.1f s (1 beamBending call)\
 %% results
 for k = 1:numel(kinds)
     fprintf('\n%s\n', names{k})
-    fprintf(' tip defl (m)  volume (cm^3)  xs/c   root: skin  box w  box wall   mid (r=0.75): skin  box w  box wall\n')
+    fprintf(' tip defl (mm)  volume (cm^3)  xs/c   root: skin  box w  box wall   mid (r=0.75): skin  box w  box wall\n')
     for e = 1:nFront
         s = describe(F(k).opt{e}, F(k).idx{e});
         m = round(N/2);
-        fprintf('   %6.3f        %7.1f     %5.2f   %4.1f mm  %3.0f mm  %4.1f mm       %4.1f mm  %3.0f mm  %4.1f mm\n', ...
-                F(k).D(e), F(k).V(e), F(k).xs(e), s.ts(1), s.w(1), s.tb(1), s.ts(m), s.w(m), s.tb(m))
+        fprintf('   %6.0f         %7.1f     %5.2f   %4.1f mm  %3.0f mm  %4.1f mm       %4.1f mm  %3.0f mm  %4.1f mm\n', ...
+                F(k).D(e)*1e3, F(k).V(e), F(k).xs(e), s.ts(1), s.w(1), s.tb(1), s.ts(m), s.w(m), s.tb(m))
     end
 end
 
 fprintf('\nLightest stress-feasible printable designs:\n')
 for k = 1:numel(kinds)
-    fprintf('  %-18s V = %6.1f cm^3, tip defl = %.3f m (%.0f%% of span)\n', ...
-            names{k}, F(k).V(end), F(k).D(end), 100*F(k).D(end)/R)
+    fprintf('  %-18s V = %6.1f cm^3, tip defl = %.0f mm (%.0f%% of span)\n', ...
+            names{k}, F(k).V(end), F(k).D(end)*1e3, 100*F(k).D(end)/R)
 end
 
 %a bare box has no aerofoil shape: the blade still needs at least the
@@ -110,7 +110,7 @@ end
 V08 = A08*R*1e6; %cm^3
 fprintf('\nMinimum %.1f mm skin alone: %.0f cm^3. Bare box + this skin as dead weight:\n', min(nSkin)*tLine, V08)
 for e = [ceil(nFront/2) nFront]
-    fprintf('  %.0f cm^3 at %.3f m;  hybrid at a similar deflection: %.0f cm^3\n', F(1).V(e) + V08, F(1).D(e), ...
+    fprintf('  %.0f cm^3 at %.0f mm;  hybrid at a similar deflection: %.0f cm^3\n', F(1).V(e) + V08, F(1).D(e)*1e3, ...
             interp1(F(2).D, F(2).V, min(F(1).D(e), max(F(2).D))))
 end
 
@@ -121,8 +121,8 @@ for k = 1:numel(kinds)
         O = F(k).opt{e}; idx = F(k).idx{e};
         delta = beamBending(N,O.I(idx)');
         sig = max(absM./O.S(idx));
-        fprintf('  %-18s point %2d: fast %.4f m, solver %.4f m, max stress %.2f MPa (allow %.0f)\n', ...
-                names{k}, e, F(k).D(e), abs(delta(end)), sig/1e6, sigAllow/1e6)
+        fprintf('  %-18s point %2d: fast %.1f mm, solver %.1f mm, max stress %.2f MPa (allow %.0f)\n', ...
+                names{k}, e, F(k).D(e)*1e3, abs(delta(end))*1e3, sig/1e6, sigAllow/1e6)
     end
 end
 
@@ -141,10 +141,10 @@ marks = {'s-','o-','^-'};
 %Pareto fronts
 figure(1)
 for k = 1:numel(kinds)
-    plot(F(k).D, F(k).V, marks{k}, 'Color',cols{k}, 'MarkerFaceColor',cols{k}, 'LineWidth',1.5), hold on
+    plot(F(k).D*1e3, F(k).V, marks{k}, 'Color',cols{k}, 'MarkerFaceColor',cols{k}, 'LineWidth',1.5), hold on
 end
-plot(F(1).D, F(1).V + V08, '--', 'Color',cols{1}, 'LineWidth',1)
-xlabel('tip deflection, m'), ylabel('volume, cm^3'), grid on
+plot(F(1).D*1e3, F(1).V + V08, '--', 'Color',cols{1}, 'LineWidth',1)
+xlabel('tip deflection, mm'), ylabel('volume, cm^3'), grid on
 legend([names {sprintf('printable box + %.1f mm skin as dead weight', min(nSkin)*tLine)}], 'Location','northeast')
 title(sprintf('Printable designs in whole %.1f mm perimeters, SF = %.1f', tLine, SF))
 

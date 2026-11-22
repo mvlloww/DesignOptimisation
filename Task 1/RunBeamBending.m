@@ -66,8 +66,8 @@ vol = trapz(nodeLocations,A); %m^3
 sigma = abs(M).*ymax./I; %bending stress magnitude at every node (Pa) - solver returns M as negative
 fprintf('Structure: %s\n', structure)
 fprintf('Volume = %.1f cm^3 (mass = %.3f kg at ABS ~1050 kg/m^3)\n', vol*1e6, vol*1050)
-fprintf('Tip deflection = %.3f m (%.0f%% of span), max bending stress = %.2f MPa (yield 30 MPa)\n', ...
-        abs(delta(end)), 100*abs(delta(end))/L, max(sigma)/1e6)
+fprintf('Tip deflection = %.0f mm (%.0f%% of span), max bending stress = %.2f MPa (yield 30 MPa)\n', ...
+        abs(delta(end))*1e3, 100*abs(delta(end))/L, max(sigma)/1e6)
 
 %plot the aerofoil and the structural cross-section
 figure(1)
@@ -81,9 +81,9 @@ end
 %plot the results
 figure(2)
 subplot(3,1,1) %3 subplots in one figure (check the docs for more info)
-plot(nodeLocations,delta,'ko-') %plot the deflection (delta, returned in m) at each node location across the blade
+plot(nodeLocations,delta*1e3,'ko-') %plot the deflection (delta, returned in m, shown in mm) at each node location across the blade
 xlabel('distance, m') %set labels
-ylabel('deflection, m')
+ylabel('deflection, mm')
 
 subplot(3,1,2) %plot on the second subplot
 plot(nodeLocations,sigma/1e6,'ko-'), hold on %plot the bending stress (M*y / I) at every node location

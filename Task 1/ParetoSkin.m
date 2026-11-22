@@ -117,13 +117,13 @@ fprintf('Both Pareto fronts: %d points each in %.2f s (1 beamBending call)\n', n
 
 %% results
 fprintf('\nLinear taper (continuous reference)\n')
-fprintf(' tip defl (m)  volume (cm^3)  tRoot  tTip (mm)  |  rounded up: tip defl (m)  volume (cm^3)\n')
-fprintf('   %6.3f        %7.1f      %5.2f  %5.2f     |              %6.3f        %7.1f\n', [D; V; X'; Dr; Vr])
+fprintf(' tip defl (mm)  volume (cm^3)  tRoot  tTip (mm)  |  rounded up: tip defl (mm)  volume (cm^3)\n')
+fprintf('   %6.0f         %7.1f      %5.2f  %5.2f     |               %6.0f         %7.1f\n', [D*1e3; V; X'; Dr*1e3; Vr])
 
 stepNames = arrayfun(@(k) sprintf('%.1f->%.1f', tLev(k)*1e3, tLev(k+1)*1e3), 1:K-1, 'UniformOutput', false);
 fprintf('\nStepped skin, optimised in whole %.1f mm perimeters\n', tLine)
-fprintf(' tip defl (m)  volume (cm^3)  step positions r (m): %s\n', strjoin(stepNames,'  '))
-fprintf(['   %6.3f        %7.1f      ' repmat('        %5.3f',1,K-1) '\n'], [DS; VS; B'])
+fprintf(' tip defl (mm)  volume (cm^3)  step positions r (m): %s\n', strjoin(stepNames,'  '))
+fprintf(['   %6.0f         %7.1f      ' repmat('        %5.3f',1,K-1) '\n'], [DS*1e3; VS; B'])
 
 fprintf('\nLightest printable design: rounded-up taper %.1f cm^3, optimised steps %.1f cm^3 (%.1f%% less)\n', ...
         Vr(end), VS(end), 100*(1 - VS(end)/Vr(end)))
@@ -136,8 +136,8 @@ for k = [1 ceil(nFront/2) nFront]
     It = skinSection(t,c);
     delta = beamBending(N,It);
     sig = max(absM*ym./It);
-    fprintf('  point %2d: exact %.4f m, solver %.4f m, max nodal stress %.2f MPa (allow %.0f)\n', ...
-            k, DS(k), abs(delta(end)), sig/1e6, sigAllow/1e6)
+    fprintf('  point %2d: exact %.1f mm, solver %.1f mm, max nodal stress %.2f MPa (allow %.0f)\n', ...
+            k, DS(k)*1e3, abs(delta(end))*1e3, sig/1e6, sigAllow/1e6)
 end
 
 %brute-force grid of linear designs to show the design space behind the fronts
@@ -150,13 +150,13 @@ ok = Sg <= sigAllow;
 
 %plot the Pareto fronts
 figure(1)
-scatter(Dg(ok),Vg(ok),12,[0.7 0.7 0.7],'filled'), hold on
-scatter(Dg(~ok),Vg(~ok),12,[1 0.7 0.7],'filled')
-plot(D,V,'ko-','LineWidth',1.5,'MarkerFaceColor','k')
-plot(Dr,Vr,'--','Color',[0.5 0.5 0.5],'LineWidth',1)
-plot(DS,VS,'bs-','LineWidth',1.5,'MarkerFaceColor','b')
-xline(0.15*R,'b--','15% of span')
-xlabel('tip deflection, m'), ylabel('volume, cm^3'), grid on
+scatter(Dg(ok)*1e3,Vg(ok),12,[0.7 0.7 0.7],'filled'), hold on
+scatter(Dg(~ok)*1e3,Vg(~ok),12,[1 0.7 0.7],'filled')
+plot(D*1e3,V,'ko-','LineWidth',1.5,'MarkerFaceColor','k')
+plot(Dr*1e3,Vr,'--','Color',[0.5 0.5 0.5],'LineWidth',1)
+plot(DS*1e3,VS,'bs-','LineWidth',1.5,'MarkerFaceColor','b')
+xline(0.15*R*1e3,'b--','15% of span')
+xlabel('tip deflection, mm'), ylabel('volume, cm^3'), grid on
 legend('linear taper: feasible','linear taper: violates stress','linear taper Pareto front (continuous)', ...
        'linear taper rounded up to perimeters', sprintf('stepped skin, optimised in %.1f mm perimeters',tLine), ...
        'Location','northeast')
@@ -164,9 +164,9 @@ title(sprintf('Thin skin, SF = %.1f, t = %.1f-%.1f mm', SF, tMin, tMax))
 
 %plot where each step ends for every Pareto-optimal stepped design
 figure(2)
-plot(DS,B,'s-','MarkerFaceColor','auto'), hold on
+plot(DS*1e3,B,'s-','MarkerFaceColor','auto'), hold on
 yline(bMin,':','Color',[0.5 0.5 0.5])
-xlabel('tip deflection, m'), ylabel('step position r, m'), grid on
+xlabel('tip deflection, mm'), ylabel('step position r, m'), grid on
 legend(strcat(stepNames,' mm'),'Location','northeast')
 title('Stepped skin: where each perimeter is dropped (dotted = stress limit)')
 

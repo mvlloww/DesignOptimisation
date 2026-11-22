@@ -82,23 +82,23 @@ fprintf('Pareto fronts for %d concepts in %.1f s (1 beamBending call)\n', numel(
 %% results
 fprintf('\n%-11s  %s\n', 'concept', 'lightest stress-feasible design')
 for k = 1:numel(C)
-    fprintf('%-11s  V = %6.1f cm^3, tip defl = %.3f m (%.0f%% of span), max stress = %.2f MPa, x = [%s]\n', ...
-            C(k).name, C(k).V(end), C(k).D(end), 100*C(k).D(end)/R, C(k).S(end)/1e6, ...
+    fprintf('%-11s  V = %6.1f cm^3, tip defl = %.0f mm (%.0f%% of span), max stress = %.2f MPa, x = [%s]\n', ...
+            C(k).name, C(k).V(end), C(k).D(end)*1e3, 100*C(k).D(end)/R, C(k).S(end)/1e6, ...
             strjoin(compose('%.3g',C(k).X(end,:)),' '))
 end
 [Vs, Ds] = evalConcept('spar',[0.5 c*1e3 c*1e3],r,c,M,E); %fully filled blade for reference
-fprintf('%-11s  V = %6.1f cm^3, tip defl = %.3f m (%.0f%% of span)\n', 'fully solid', Vs, Ds, 100*Ds/R)
+fprintf('%-11s  V = %6.1f cm^3, tip defl = %.0f mm (%.0f%% of span)\n', 'fully solid', Vs, Ds*1e3, 100*Ds/R)
 
 fprintf('\nHollow box Pareto front\n')
-fprintf(' tip defl (m)  volume (cm^3)   xs     wRoot  wTip (mm)   tRoot  tTip (mm)\n')
-fprintf('   %6.3f        %7.1f      %5.3f   %6.1f %6.1f      %5.2f  %5.2f\n', [C(2).D; C(2).V; C(2).X'])
+fprintf(' tip defl (mm)  volume (cm^3)   xs     wRoot  wTip (mm)   tRoot  tTip (mm)\n')
+fprintf('   %6.0f         %7.1f      %5.3f   %6.1f %6.1f      %5.2f  %5.2f\n', [C(2).D*1e3; C(2).V; C(2).X'])
 
 %check the lightest design of every concept against the full solver
 fprintf('\nCheck lightest designs against beamBending:\n')
 for k = 1:numel(C)
     I = conceptSection(C(k).key,C(k).X(end,:),r,c);
     delta = beamBending(N,I);
-    fprintf('  %-11s fast %.4f m, solver %.4f m\n', C(k).name, C(k).D(end), abs(delta(end)))
+    fprintf('  %-11s fast %.1f mm, solver %.1f mm\n', C(k).name, C(k).D(end)*1e3, abs(delta(end))*1e3)
 end
 
 %% figures
@@ -108,10 +108,10 @@ marks = {'o-','s-','^-'};
 %Pareto fronts of all concepts
 figure(1)
 for k = 1:numel(C)
-    semilogy(C(k).D, C(k).V, marks{k}, 'Color',cols{k}, 'MarkerFaceColor',cols{k}, 'LineWidth',1.5), hold on
+    semilogy(C(k).D*1e3, C(k).V, marks{k}, 'Color',cols{k}, 'MarkerFaceColor',cols{k}, 'LineWidth',1.5), hold on
 end
-semilogy(Ds, Vs, 'kp', 'MarkerSize',14, 'MarkerFaceColor','y')
-xlabel('tip deflection, m'), ylabel('volume, cm^3 (log scale)'), grid on
+semilogy(Ds*1e3, Vs, 'kp', 'MarkerSize',14, 'MarkerFaceColor','y')
+xlabel('tip deflection, mm'), ylabel('volume, cm^3 (log scale)'), grid on
 legend([{C.name} {'fully solid blade'}], 'Location','northeast')
 title(sprintf('Optimised concepts, linear tapers, SF = %.1f', SF))
 
@@ -125,12 +125,12 @@ end
 
 %how the optimal box changes along its front
 figure(3)
-subplot(1,3,1), plot(C(2).D, C(2).X(:,1), 's-'), grid on
-xlabel('tip deflection, m'), ylabel('box centre x_s / c')
-subplot(1,3,2), plot(C(2).D, C(2).X(:,2:3), 's-'), grid on
-xlabel('tip deflection, m'), ylabel('box width, mm'), legend('root','tip')
-subplot(1,3,3), plot(C(2).D, C(2).X(:,4:5), 's-'), grid on
-xlabel('tip deflection, m'), ylabel('wall thickness, mm'), legend('root','tip')
+subplot(1,3,1), plot(C(2).D*1e3, C(2).X(:,1), 's-'), grid on
+xlabel('tip deflection, mm'), ylabel('box centre x_s / c')
+subplot(1,3,2), plot(C(2).D*1e3, C(2).X(:,2:3), 's-'), grid on
+xlabel('tip deflection, mm'), ylabel('box width, mm'), legend('root','tip')
+subplot(1,3,3), plot(C(2).D*1e3, C(2).X(:,4:5), 's-'), grid on
+xlabel('tip deflection, mm'), ylabel('wall thickness, mm'), legend('root','tip')
 sgtitle('Hollow box: Pareto-optimal design variables')
 
 
