@@ -1,29 +1,30 @@
 clc, clear all, close all
 
-%Printable designs, optimised directly in whole 0.4 mm perimeters:
+%Lightest PRINTABLE designs, chosen directly in whole 0.4 mm perimeters:
 % 1) printable hollow box spar (no skin)
 % 2) skin + box hybrid: the skin gives the aerodynamic shape anyway, so it
 %    is counted structurally, and a box spar is added inside it where needed
-% 3) skin only (reference, generalises the stepped skin of ParetoSkin.m)
+% 3) skin only (reference: should match the stepped skin of OptimiseSkin.m)
 %
-%At every spanwise node the section is chosen from a table of printable
-%options: skin perimeters, box width and box wall perimeters. The box
-%centre xs is the same at every node (straight webs) and is swept.
+%Single-objective problem statement (notes p.17-21):
+%   minimise    V = sum_i q_i A_i                  volume (trapezoidal rule)
+%   by varying  the section at every node i:       skin perimeters, box width,
+%               box wall perimeters (discrete, notes p.11), box centre xs
+%   subject to  sigma_i/sigAllow - 1 <= 0          stress at every node
+%               sections only stay the same or shrink from root to tip (printing)
+%Tip deflection is reported as a check, not optimised (notes p.79).
 %
-%Method: volume, tip deflection and stress are all sums of per-node terms
-%(trapezoidal rule, statically determinate blade):
-%   V     = sum_i q_i A_i
-%   delta = sum_i G_i / I_i,     G_i = q_i |M_i| (R - r_i)/E   (unit-load method)
-%   stress: I_i/ymax_i >= |M_i|/sigAllow                       (local to node i)
-%The epsilon-constraint problem  min V s.t. delta <= eps  is relaxed with a
-%Lagrange multiplier lambda:
-%   minimise  sum_i [q_i A_i + lambda G_i / I_i]
-%For printing, skin perimeters, box width and box wall may only stay the
-%same or shrink from root to tip. This links neighbouring nodes in a chain,
-%so the problem is solved EXACTLY by dynamic programming from tip to root
-%(a running minimum over the option grid at each node). lambda is then
-%bisected until delta <= eps. Every design is printable by construction:
-%no rounding afterwards.
+%Method: the design variables are discrete (whole perimeters, a table of
+%widths), so gradient-based fmincon cannot be used directly. Instead:
+% - every option in the table is evaluated at every node (brute force over
+%   a small discrete set, notes p.26), which is cheap because volume and
+%   stress are just sums/checks per node
+% - the "only shrink" rule links each node to the next one, so the nodes
+%   are chosen together by dynamic programming: working from tip to root,
+%   each node keeps the lightest way to finish the blade outboard of it.
+%   This gives the exact lightest printable design in one pass.
+% - the box centre xs is the same at every node (straight webs) and is
+%   swept over a list, keeping the lightest (brute force, notes p.26).
 
 N = 100; %the beam solver discretises beam into 100 nodes
 c = 0.15; %define the chord length - KEEP FIXED
@@ -36,73 +37,47 @@ E = 2e9; %Young's modulus of ABS (Pa)
 SF = 1.5; %safety factor on yield
 sigAllow = 30e6/SF; %allowable bending stress (Pa)
 tLine = 0.4; %printed perimeter (extrusion line) width (mm)
-nSkin = 2:7; %skin perimeters: 0.8-2.8 mm (mid-surface skin model within 1.5%, as ParetoSkin.m)
-nBox = 2:25; %box wall perimeters: 0.8-10 mm (as ParetoSpar.m)
+nSkin = 2:7; %skin perimeters: 0.8-2.8 mm (mid-surface skin model within 1.5%, as OptimiseSkin.m)
+nBox = 2:25; %box wall perimeters: 0.8-10 mm (as CompareConcepts.m)
 wList = 10:2:150; %box widths (mm); 10 mm minimum keeps a real closed box rather than a sliver
 xsList = 0.24:0.02:0.44; %box centre positions swept (x/c)
-nFront = 15; %number of points on each Pareto front
 
 %the blade is statically determinate, so the bending moment M(r) does not
 %depend on I - ONE solver call gives M for every design
 [~, M] = beamBending(N,1e-8*ones(1,N));
 absM = abs(M(:));
 q = ([diff(r); 0] + [0; diff(r)])/2; %trapezoidal weights, so sums equal trapz exactly
-G = q.*absM.*(R - r)/E; %deflection weight of each node: delta = sum(G./I)
+G = q.*absM.*(R - r)/E; %unit-load deflection weight of each node: delta = sum(G./I)
 Sreq = absM/sigAllow; %required section modulus I/ymax at each node
 
 kinds = {'box','hybrid','skin'};
 names = {'printable box','skin + box hybrid','skin only'};
 
+%% lightest printable design of each concept (sweep the box centre)
 tic
-%% option tables (one per concept and box position)
 for k = 1:numel(kinds)
     if strcmp(kinds{k},'skin'), xsK = NaN; else, xsK = xsList; end
+    F(k).Vxs = zeros(size(xsK)); F(k).V = inf; %#ok<SAGROW>
     for j = 1:numel(xsK)
-        Opt{k,j} = buildOptions(kinds{k}, xsK(j), c, tLine, nSkin, nBox, wList); %#ok<SAGROW>
-    end
-    XS{k} = xsK; %#ok<SAGROW>
-end
-
-%% Pareto fronts: anchors, then epsilon-constraint by bisection on lambda
-for k = 1:numel(kinds)
-    nX = numel(XS{k});
-    dL = zeros(1,nX); vL = dL; dS = dL;
-    for j = 1:nX
-        [~, vL(j), dL(j)] = evalLambda(0, Opt{k,j}, G, Sreq, q); %lightest stress-feasible
-        [~, ~, dS(j)] = evalLambda(1e8, Opt{k,j}, G, Sreq, q); %stiffest
-    end
-    [~, jL] = min(vL);
-    epsList = linspace(min(dS), dL(jL), nFront);
-    F(k).V = zeros(1,nFront); F(k).D = F(k).V; F(k).xs = F(k).V; F(k).idx = cell(1,nFront); %#ok<SAGROW>
-    for e = 1:nFront
-        best = inf;
-        for j = 1:nX %best box position for this deflection limit
-            [idx, V, D] = solveEps(epsList(e), Opt{k,j}, G, Sreq, q);
-            if V < best
-                best = V; F(k).V(e) = V; F(k).D(e) = D; F(k).xs(e) = XS{k}(j);
-                F(k).idx{e} = idx; F(k).opt{e} = Opt{k,j};
-            end
+        O = buildOptions(kinds{k}, xsK(j), c, tLine, nSkin, nBox, wList);
+        [idx, V, D] = lightestDesign(O, G, Sreq, q);
+        F(k).Vxs(j) = V;
+        if V < F(k).V
+            F(k).V = V; F(k).D = D; F(k).xs = xsK(j); F(k).idx = idx; F(k).opt = O;
         end
     end
+    F(k).xsList = xsK;
 end
-fprintf('Printable Pareto fronts for %d concepts in %.1f s (1 beamBending call)\n', numel(kinds), toc)
+fprintf('Lightest printable designs for %d concepts in %.1f s (1 beamBending call)\n', numel(kinds), toc)
 
 %% results
-for k = 1:numel(kinds)
-    fprintf('\n%s\n', names{k})
-    fprintf(' tip defl (mm)  volume (cm^3)  xs/c   root: skin  box w  box wall   mid (r=0.75): skin  box w  box wall\n')
-    for e = 1:nFront
-        s = describe(F(k).opt{e}, F(k).idx{e});
-        m = round(N/2);
-        fprintf('   %6.3f         %7.1f     %5.2f   %4.1f mm  %3.0f mm  %4.1f mm       %4.1f mm  %3.0f mm  %4.1f mm\n', ...
-                F(k).D(e), F(k).V(e), F(k).xs(e), s.ts(1), s.w(1), s.tb(1), s.ts(m), s.w(m), s.tb(m))
-    end
-end
-
 fprintf('\nLightest stress-feasible printable designs:\n')
+fprintf(' %-18s  volume (cm^3)  tip defl (mm)  xs/c   root: skin  box w  box wall   mid (r=0.75): skin  box w  box wall\n', '')
+m = round(N/2);
 for k = 1:numel(kinds)
-    fprintf('  %-18s V = %6.1f cm^3, tip defl = %.3f mm (%.2f%% of span)\n', ...
-            names{k}, F(k).V(end), F(k).D(end), 100*F(k).D(end)/(R*1e3))
+    s = describe(F(k).opt, F(k).idx);
+    fprintf(' %-18s     %6.1f        %6.3f      %5.2f   %4.1f mm  %3.0f mm  %4.1f mm       %4.1f mm  %3.0f mm  %4.1f mm\n', ...
+            names{k}, F(k).V, F(k).D, F(k).xs, s.ts(1), s.w(1), s.tb(1), s.ts(m), s.w(m), s.tb(m))
 end
 
 %a bare box has no aerofoil shape: the blade still needs at least the
@@ -110,70 +85,72 @@ end
 %hybrid gains by making the skin structural.
 [~, A08] = skinSection(min(nSkin)*tLine*1e-3, c);
 V08 = A08*R*1e6; %cm^3
-fprintf('\nMinimum %.1f mm skin alone: %.0f cm^3. Bare box + this skin as dead weight:\n', min(nSkin)*tLine, V08)
-for e = [ceil(nFront/2) nFront]
-    fprintf('  %.0f cm^3 at %.3f mm;  hybrid at a similar deflection: %.0f cm^3\n', F(1).V(e) + V08, F(1).D(e), ...
-            interp1(F(2).D, F(2).V, min(F(1).D(e), max(F(2).D))))
-end
+fprintf('\nMinimum %.1f mm skin alone: %.0f cm^3\n', min(nSkin)*tLine, V08)
+fprintf('Bare box + this skin as dead weight: %.0f cm^3;  skin + box hybrid: %.0f cm^3 (%.0f%% less)\n', ...
+        F(1).V + V08, F(2).V, 100*(1 - F(2).V/(F(1).V + V08)))
 
-%check the lightest and a mid-front design of each concept against the full solver
+%check against the full solver (deflection) and every node (stress)
 fprintf('\nCheck against beamBending (and nodal stress):\n')
 for k = 1:numel(kinds)
-    for e = [ceil(nFront/2) nFront]
-        O = F(k).opt{e}; idx = F(k).idx{e};
-        delta = beamBending(N,O.I(idx)');
-        sig = max(absM./O.S(idx));
-        fprintf('  %-18s point %2d: fast %.4f mm, solver %.4f mm, max stress %.2f MPa (allow %.0f)\n', ...
-                names{k}, e, F(k).D(e), abs(delta(end)), sig/1e6, sigAllow/1e6)
-    end
+    O = F(k).opt; idx = F(k).idx;
+    delta = beamBending(N,O.I(idx)');
+    fprintf('  %-18s fast %.4f mm, solver %.4f mm, max stress %.2f MPa (allow %.0f)\n', ...
+            names{k}, F(k).D, abs(delta(end)), max(absM./O.S(idx))/1e6, sigAllow/1e6)
 end
 
 %printability: how often the section changes along the span
-fprintf('\nSection changes along the span (lightest designs):\n')
+fprintf('\nSection changes along the span:\n')
 for k = 1:numel(kinds)
-    s = describe(F(k).opt{end}, F(k).idx{end});
+    s = describe(F(k).opt, F(k).idx);
     fprintf('  %-18s skin %d, box width %d, box wall %d changes\n', names{k}, ...
             nnz(diff(s.ts)), nnz(diff(s.w)), nnz(diff(s.tb)))
 end
 
 %% figures
-cols = {[0 0.45 0.74], [0.47 0.67 0.19], [0.3 0.3 0.3]};
-marks = {'s-','o-','^-'};
+cols = {[0 0.45 0.74], [0.47 0.67 0.19], [0.3 0.3 0.3], [0.6 0.75 0.9]};
 
-%Pareto fronts
+%volumes, including the bare box with the skin it still needs for its shape
 figure(1)
-for k = 1:numel(kinds)
-    plot(F(k).D, F(k).V, marks{k}, 'Color',cols{k}, 'MarkerFaceColor',cols{k}, 'LineWidth',1.5), hold on
-end
-plot(F(1).D, F(1).V + V08, '--', 'Color',cols{1}, 'LineWidth',1)
-xlabel('tip deflection, mm'), ylabel('volume, cm^3'), grid on
-legend([names {sprintf('printable box + %.1f mm skin as dead weight', min(nSkin)*tLine)}], 'Location','northeast')
-title(sprintf('Printable designs in whole %.1f mm perimeters, SF = %.1f', tLine, SF))
+labels = {'printable box', 'box + 0.8 mm skin (dead weight)', 'skin + box hybrid', 'skin only'};
+vals = [F(1).V, F(1).V + V08, F(2).V, F(3).V];
+bh = bar(categorical(labels,labels), vals); bh.FaceColor = 'flat';
+bh.CData = vertcat(cols{[1 4 2 3]});
+text(1:4, vals, compose('%.0f cm^3',vals), 'HorizontalAlignment','center','VerticalAlignment','bottom')
+ylabel('volume, cm^3'), grid on
+title(sprintf('Lightest printable designs in whole %.1f mm perimeters, SF = %.1f', tLine, SF))
 
 %spanwise layout of the lightest hybrid
 figure(2)
-s = describe(F(2).opt{end}, F(2).idx{end});
+s = describe(F(2).opt, F(2).idx);
 subplot(2,1,1)
 stairs(r, s.ts, 'k-', 'LineWidth',1.5), hold on
 stairs(r, s.tb, '-', 'Color',cols{2}, 'LineWidth',1.5)
 ylabel('thickness, mm'), grid on, legend('skin','box wall')
-title(sprintf('Lightest skin + box hybrid: V = %.0f cm^3, x_s/c = %.2f', F(2).V(end), F(2).xs(end)))
+title(sprintf('Lightest skin + box hybrid: V = %.0f cm^3, x_s/c = %.2f', F(2).V, F(2).xs))
 subplot(2,1,2)
 stairs(r, s.w, '-', 'Color',cols{2}, 'LineWidth',1.5)
 xlabel('distance from root, m'), ylabel('box width, mm'), grid on
 
-%cross-sections of the lightest hybrid and printable box
+%cross-sections of the lightest printable box and hybrid
 figure(3)
 rShow = [0 0.5 1.0];
 for k = 1:2
-    s = describe(F(k).opt{end}, F(k).idx{end});
+    s = describe(F(k).opt, F(k).idx);
     for j = 1:numel(rShow)
         [~, n] = min(abs(r - rShow(j)));
         subplot(2,numel(rShow),(k-1)*numel(rShow) + j)
-        drawSection(s.ts(n), s.w(n), s.tb(n), F(k).xs(end), c)
+        drawSection(s.ts(n), s.w(n), s.tb(n), F(k).xs, c)
         title(sprintf('%s, r = %.1f m', names{k}, r(n)))
     end
 end
+
+%effect of the box centre position (1-D brute-force sweep)
+figure(4)
+plot(F(1).xsList, F(1).Vxs, 's-', 'Color',cols{1}, 'MarkerFaceColor',cols{1}), hold on
+plot(F(2).xsList, F(2).Vxs, 'o-', 'Color',cols{2}, 'MarkerFaceColor',cols{2})
+xlabel('box centre x_s / c'), ylabel('lightest volume, cm^3'), grid on
+legend(names(1:2), 'Location','best')
+title('Box position sweep')
 
 
 %full grid of printable section options for one concept (and box centre
@@ -202,44 +179,29 @@ function O = buildOptions(kind, xs, c, tLine, nSkin, nBox, wList)
     O.ok = O.ok & O.I > 0;
 end
 
-%best printable design for one lambda: minimise sum_i [q_i A + lambda G_i/I]
-%with every node meeting its stress limit and the section only staying the
-%same or shrinking from root to tip (dynamic programming, tip to root)
-function [idx, V, D] = evalLambda(lam, O, G, Sreq, q)
+%lightest printable design: minimise sum_i q_i A_i with every node meeting
+%its stress limit and the section only staying the same or shrinking from
+%root to tip. Dynamic programming, tip to root: g(i,s) is the lightest
+%volume of nodes i..N when node i uses section s.
+function [idx, V, D] = lightestDesign(O, G, Sreq, q)
     N = numel(G);
-    cost = q.*O.A' + lam*G./O.I'; %q: trapezoidal weights, so the area term is the real volume
-    cost(O.S' < Sreq | ~O.ok') = inf;
-    g = zeros(size(cost)); g(N,:) = cost(N,:); %g(i,s) = best cost of nodes i..N with section s at node i
+    cost = q.*O.A'; %volume of each option at each node
+    cost(O.S' < Sreq | ~O.ok') = inf; %overstressed or unbuildable options are not allowed
+    g = zeros(size(cost)); g(N,:) = cost(N,:);
     for i = N-1:-1:1
         h = reshape(g(i+1,:), O.sz);
-        h = cummin(cummin(cummin(h,1),2),3); %best next section that is no larger in every dimension
+        h = cummin(cummin(cummin(h,1),2),3); %lightest next section that is no larger in every dimension
         g(i,:) = cost(i,:) + h(:)';
     end
     idx = zeros(N,1);
     [gmin, idx(1)] = min(g(1,:));
     if isinf(gmin), error('no printable design carries the moment - widen the option table'), end
-    for i = 2:N %follow the optimal choices from root to tip
+    for i = 2:N %follow the lightest choices from root to tip
         v = g(i,:); v(any(O.sub > O.sub(idx(i-1),:), 2)) = inf;
         [~, idx(i)] = min(v);
     end
     V = sum(q.*O.A(idx))*1e6; %cm^3
-    D = sum(G./O.I(idx)); %mm
-end
-
-%lightest design with tip deflection <= eps: bisect lambda (deflection
-%falls and volume rises monotonically as lambda grows)
-function [idx, V, D] = solveEps(eps, O, G, Sreq, q)
-    [idx, V, D] = evalLambda(0, O, G, Sreq, q);
-    if D <= eps, return, end
-    lo = -12; hi = 8; %log10(lambda)
-    [idx, V, D] = evalLambda(10^hi, O, G, Sreq, q);
-    if D > eps, V = inf; return, end %this box position cannot reach eps
-    while hi - lo > 1e-3 %0.1% in lambda
-        mid = (lo + hi)/2;
-        [~, ~, Dm] = evalLambda(10^mid, O, G, Sreq, q);
-        if Dm <= eps, hi = mid; else, lo = mid; end
-    end
-    [idx, V, D] = evalLambda(10^hi, O, G, Sreq, q);
+    D = sum(G./O.I(idx)); %tip deflection, mm (reported only)
 end
 
 %skin thickness, box width and box wall (mm) at every node of a design
@@ -254,7 +216,7 @@ function yt = naca0012(x,c)
                    + 0.2843*xc.^3 - 0.1015*xc.^4);
 end
 
-%thin structural skin (same as RunBeamBending.m and ParetoSkin.m); t = 0 gives no skin
+%thin structural skin (same as RunBeamBending.m and OptimiseSkin.m); t = 0 gives no skin
 function [I, A, ymax] = skinSection(t,c)
     nPanels = 200;
     beta = linspace(0,pi,nPanels+1);

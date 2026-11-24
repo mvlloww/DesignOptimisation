@@ -1,8 +1,8 @@
 clc, clear all, close all
 
 %Fair comparison of structural concepts: every concept is optimised with
-%the same method, loads, safety factor and print limits, so the choice of
-%concept is based on optimised designs rather than hand-picked ones.
+%the same method, load, safety factor and print limits, so the choice of
+%concept rests on optimised designs rather than hand-picked ones.
 %
 %   solid spar  (Approach 1)        x = [xs wRoot wTip]
 %   hollow box  (Approach 1, guide) x = [xs wRoot wTip tRoot tTip]
@@ -10,10 +10,12 @@ clc, clear all, close all
 %
 %xs = chordwise centre of the spar (x/c), w = spar width (mm), t = wall
 %thickness (mm); widths and thicknesses taper linearly from root to tip.
-%For each concept an epsilon-constraint Pareto front is found:
-%   minimise V(x)  subject to  sigma_max(x) <= sigAllow,  delta_tip(x) <= eps
-%Spar position and width make the problem non-convex, so every
-%optimisation is run from several starting points (multistart).
+%Single-objective problem for each concept (notes p.17-21):
+%   minimise V(x)  subject to  sigma_max(x)/sigAllow - 1 <= 0,  bounds,  2t <= w
+%Tip deflection is reported as a check, not optimised (notes p.79).
+%Spar position and width make the problem non-convex (several local
+%minima), so fmincon is run from several starting points and the best
+%feasible answer is kept (multistart, notes p.43 and p.58).
 
 N = 100; %the beam solver discretises beam into 100 nodes
 c = 0.15; %define the chord length - KEEP FIXED
@@ -28,9 +30,7 @@ sigAllow = 30e6/SF; %allowable bending stress (Pa)
 tMin = 0.8; %minimum wall thickness (mm) - two perimeters of 0.4 mm nozzle extrusion
 tMax = 2.8; %maximum SKIN thickness (mm) - 7 perimeters; mid-surface skin model within 1.5% up to here
 tBoxMax = 10; %maximum box wall thickness (mm) - the strip model is exact for any t
-nFront = 15; %number of points on each Pareto front
-nStartAnchor = 8; %multistart points for the two anchor designs
-nStartSweep = 3; %extra random starts for every point on the front (plus a warm start)
+nStart = 20; %multistart points per concept - 10 missed the best solid spar (797 vs 748 cm^3); 20 and 30 agree over 3 seeds
 
 %the blade is statically determinate, so the bending moment M(r) does not
 %depend on I - ONE solver call gives M for every design of every concept
@@ -38,7 +38,7 @@ nStartSweep = 3; %extra random starts for every point on the front (plus a warm 
 opts = optimoptions('fmincon','Display','off');
 rng(0) %repeatable random starts
 
-%% concept definitions
+%% concept definitions (bounds lb/ub and linear constraints A x <= b, notes p.69-70)
 C(1).name = 'solid spar'; C(1).key = 'spar';
 C(1).lb = [0.05 tMin tMin]; C(1).ub = [0.95 c*1e3 c*1e3];
 C(1).A = []; C(1).b = [];
@@ -51,96 +51,70 @@ C(3).name = 'thin skin'; C(3).key = 'skin';
 C(3).lb = [tMin tMin]; C(3).ub = [tMax tMax];
 C(3).A = []; C(3).b = [];
 
-%% Pareto front of every concept
+%% lightest stress-feasible design of every concept
 tic
 for k = 1:numel(C)
     ev = @(x) evalConcept(C(k).key,x,r,c,M,E); %x -> [volume cm^3, tip deflection mm, max stress Pa]
     volume = @(x) pick(ev,x,1);
-    deflection = @(x) pick(ev,x,2);
-    stressCon = @(x) pick(ev,x,3)/sigAllow - 1; %normalised: <= 0 is feasible
-    starts = @(n) C(k).lb + (C(k).ub - C(k).lb).*rand(n,numel(C(k).lb));
-
-    %anchor 1: lightest design that meets the stress constraint
-    xLight = bestOf(volume, starts(nStartAnchor), C(k), @(x) deal(stressCon(x),[]), opts);
-    %anchor 2: stiffest stress-feasible design
-    xStiff = bestOf(deflection, starts(nStartAnchor), C(k), @(x) deal(stressCon(x),[]), opts);
-    [~, dLight] = ev(xLight);
-    [~, dStiff] = ev(xStiff);
-
-    %epsilon-constraint sweep, stiff to light, warm start plus random starts
-    epsList = linspace(dStiff,dLight,nFront);
-    X = zeros(nFront,numel(C(k).lb)); V = zeros(1,nFront); D = V; S = V;
-    x0 = xStiff;
-    for j = 1:nFront
-        nonlcon = @(x) deal([stressCon(x); deflection(x)/epsList(j) - 1], []);
-        X(j,:) = bestOf(volume, [x0; starts(nStartSweep)], C(k), nonlcon, opts);
-        [V(j), D(j), S(j)] = ev(X(j,:));
-        x0 = X(j,:);
-    end
-    C(k).X = X; C(k).V = V; C(k).D = D; C(k).S = S;
+    nonlcon = @(x) deal(pick(ev,x,3)/sigAllow - 1, []); %normalised: <= 0 is feasible
+    starts = C(k).lb + (C(k).ub - C(k).lb).*rand(nStart,numel(C(k).lb));
+    [C(k).x, C(k).fAll] = bestOf(volume, starts, C(k), nonlcon, opts);
+    [C(k).V, C(k).D, C(k).S] = ev(C(k).x);
 end
-fprintf('Pareto fronts for %d concepts in %.1f s (1 beamBending call)\n', numel(C), toc)
+fprintf('Lightest design of %d concepts in %.1f s (1 beamBending call)\n', numel(C), toc)
 
 %% results
 fprintf('\n%-11s  %s\n', 'concept', 'lightest stress-feasible design')
 for k = 1:numel(C)
-    fprintf('%-11s  V = %6.1f cm^3, tip defl = %.3f mm (%.2f%% of span), max stress = %.2f MPa, x = [%s]\n', ...
-            C(k).name, C(k).V(end), C(k).D(end), 100*C(k).D(end)/(R*1e3), C(k).S(end)/1e6, ...
-            strjoin(compose('%.3g',C(k).X(end,:)),' '))
+    fprintf('%-11s  V = %6.1f cm^3, tip defl = %.3f mm, max stress = %.2f MPa, x = [%s]\n', ...
+            C(k).name, C(k).V, C(k).D, C(k).S/1e6, strjoin(compose('%.3g',C(k).x),' '))
 end
 [Vs, Ds] = evalConcept('spar',[0.5 c*1e3 c*1e3],r,c,M,E); %fully filled blade for reference
-fprintf('%-11s  V = %6.1f cm^3, tip defl = %.3f mm (%.2f%% of span)\n', 'fully solid', Vs, Ds, 100*Ds/(R*1e3))
+fprintf('%-11s  V = %6.1f cm^3, tip defl = %.3f mm\n', 'fully solid', Vs, Ds)
 
-fprintf('\nHollow box Pareto front\n')
-fprintf(' tip defl (mm)  volume (cm^3)   xs     wRoot  wTip (mm)   tRoot  tTip (mm)\n')
-fprintf('   %6.3f         %7.1f      %5.3f   %6.1f %6.1f      %5.2f  %5.2f\n', [C(2).D; C(2).V; C(2).X'])
+%multistart: how many starts reached the best answer (within 0.5%)?
+fprintf('\nMultistart (%d starts per concept):\n', nStart)
+for k = 1:numel(C)
+    f = C(k).fAll(isfinite(C(k).fAll));
+    fprintf('  %-11s %d of %d starts feasible, %d within 0.5%% of the best, worst local optimum %.1f cm^3\n', ...
+            C(k).name, numel(f), nStart, nnz(f <= 1.005*min(f)), max(f))
+end
 
 %check the lightest design of every concept against the full solver
-fprintf('\nCheck lightest designs against beamBending:\n')
+fprintf('\nCheck against beamBending:\n')
 for k = 1:numel(C)
-    I = conceptSection(C(k).key,C(k).X(end,:),r,c);
+    I = conceptSection(C(k).key,C(k).x,r,c);
     delta = beamBending(N,I);
-    fprintf('  %-11s fast %.4f mm, solver %.4f mm\n', C(k).name, C(k).D(end), abs(delta(end)))
+    fprintf('  %-11s fast %.4f mm, solver %.4f mm\n', C(k).name, C(k).D, abs(delta(end)))
 end
 
 %% figures
 cols = {[0.85 0.33 0.10], [0 0.45 0.74], [0.3 0.3 0.3]};
-marks = {'o-','s-','^-'};
 
-%Pareto fronts of all concepts
+%volume of the lightest design of each concept
 figure(1)
-for k = 1:numel(C)
-    semilogy(C(k).D, C(k).V, marks{k}, 'Color',cols{k}, 'MarkerFaceColor',cols{k}, 'LineWidth',1.5), hold on
-end
-semilogy(Ds, Vs, 'kp', 'MarkerSize',14, 'MarkerFaceColor','y')
-xlabel('tip deflection, mm'), ylabel('volume, cm^3 (log scale)'), grid on
-legend([{C.name} {'fully solid blade'}], 'Location','northeast')
-title(sprintf('Optimised concepts, linear tapers, SF = %.1f', SF))
+bh = bar(categorical({C.name},{C.name}), [C.V]); bh.FaceColor = 'flat';
+bh.CData = vertcat(cols{:});
+text(1:numel(C), [C.V], compose('%.0f cm^3',[C.V]), 'HorizontalAlignment','center','VerticalAlignment','bottom')
+ylabel('volume, cm^3'), grid on
+title(sprintf('Lightest stress-feasible design of each concept (fully solid blade: %.0f cm^3)', Vs))
 
 %cross-sections of the lightest design of each concept (root filled, tip dashed)
 figure(2)
 for k = 1:numel(C)
     subplot(numel(C),1,k)
-    drawSection(C(k).key, C(k).X(end,:), c)
-    title(sprintf('%s, lightest: V = %.0f cm^3 (root filled, tip dashed)', C(k).name, C(k).V(end)))
+    drawSection(C(k).key, C(k).x, c)
+    title(sprintf('%s, lightest: V = %.0f cm^3 (root filled, tip dashed)', C(k).name, C(k).V))
 end
-
-%how the optimal box changes along its front
-figure(3)
-subplot(1,3,1), plot(C(2).D, C(2).X(:,1), 's-'), grid on
-xlabel('tip deflection, mm'), ylabel('box centre x_s / c')
-subplot(1,3,2), plot(C(2).D, C(2).X(:,2:3), 's-'), grid on
-xlabel('tip deflection, mm'), ylabel('box width, mm'), legend('root','tip')
-subplot(1,3,3), plot(C(2).D, C(2).X(:,4:5), 's-'), grid on
-xlabel('tip deflection, mm'), ylabel('wall thickness, mm'), legend('root','tip')
-sgtitle('Hollow box: Pareto-optimal design variables')
 
 
 %run fmincon from every start and keep the best feasible optimum
-function xBest = bestOf(fun, starts, con, nonlcon, opts)
-    fBest = inf; xBest = starts(1,:);
+%(fAll: optimum from every start, inf where fmincon found no feasible point)
+function [xBest, fAll] = bestOf(fun, starts, con, nonlcon, opts)
+    fBest = inf; xBest = starts(1,:); fAll = inf(1,size(starts,1));
     for i = 1:size(starts,1)
         [x, f, flag] = fmincon(fun, starts(i,:), con.A, con.b, [], [], con.lb, con.ub, nonlcon, opts);
+        if flag > 0, fAll(i) = f; end
         if flag > 0 && f < fBest
             xBest = x; fBest = f;
         end
@@ -208,7 +182,7 @@ function [I, A, ymax] = stripSum(a,b,inset,c,nStrips)
     ymax = max(naca0012(edges,c), [], 2);
 end
 
-%thin structural skin (same as RunBeamBending.m and ParetoSkin.m)
+%thin structural skin (same as RunBeamBending.m and OptimiseSkin.m)
 function [I, A, ymax] = skinSection(t,c)
     nPanels = 200;
     beta = linspace(0,pi,nPanels+1);
