@@ -17,7 +17,7 @@ clc, clear all, close all
 %   stress: I_i/ymax_i >= |M_i|/sigAllow                       (local to node i)
 %The epsilon-constraint problem  min V s.t. delta <= eps  is relaxed with a
 %Lagrange multiplier lambda:
-%   minimise  sum_i [A_i + lambda G_i / I_i]
+%   minimise  sum_i [q_i A_i + lambda G_i / I_i]
 %For printing, skin perimeters, box width and box wall may only stay the
 %same or shrink from root to tip. This links neighbouring nodes in a chain,
 %so the problem is solved EXACTLY by dynamic programming from tip to root
@@ -30,6 +30,8 @@ c = 0.15; %define the chord length - KEEP FIXED
 R = 1.5; %blade length (m)
 r = linspace(0,R,N)'; %radial position of every node, root (r = 0) to tip (r = R)
 E = 2e9; %Young's modulus of ABS (Pa)
+%Deflections are in mm, the units the supplied beamBending returns (as in the original
+%RunBeamBending.m). The unit-load integral below uses the same formula, so it gives mm too.
 
 SF = 1.5; %safety factor on yield
 sigAllow = 30e6/SF; %allowable bending stress (Pa)
@@ -92,15 +94,15 @@ for k = 1:numel(kinds)
     for e = 1:nFront
         s = describe(F(k).opt{e}, F(k).idx{e});
         m = round(N/2);
-        fprintf('   %6.0f         %7.1f     %5.2f   %4.1f mm  %3.0f mm  %4.1f mm       %4.1f mm  %3.0f mm  %4.1f mm\n', ...
-                F(k).D(e)*1e3, F(k).V(e), F(k).xs(e), s.ts(1), s.w(1), s.tb(1), s.ts(m), s.w(m), s.tb(m))
+        fprintf('   %6.3f         %7.1f     %5.2f   %4.1f mm  %3.0f mm  %4.1f mm       %4.1f mm  %3.0f mm  %4.1f mm\n', ...
+                F(k).D(e), F(k).V(e), F(k).xs(e), s.ts(1), s.w(1), s.tb(1), s.ts(m), s.w(m), s.tb(m))
     end
 end
 
 fprintf('\nLightest stress-feasible printable designs:\n')
 for k = 1:numel(kinds)
-    fprintf('  %-18s V = %6.1f cm^3, tip defl = %.0f mm (%.0f%% of span)\n', ...
-            names{k}, F(k).V(end), F(k).D(end)*1e3, 100*F(k).D(end)/R)
+    fprintf('  %-18s V = %6.1f cm^3, tip defl = %.3f mm (%.2f%% of span)\n', ...
+            names{k}, F(k).V(end), F(k).D(end), 100*F(k).D(end)/(R*1e3))
 end
 
 %a bare box has no aerofoil shape: the blade still needs at least the
@@ -110,7 +112,7 @@ end
 V08 = A08*R*1e6; %cm^3
 fprintf('\nMinimum %.1f mm skin alone: %.0f cm^3. Bare box + this skin as dead weight:\n', min(nSkin)*tLine, V08)
 for e = [ceil(nFront/2) nFront]
-    fprintf('  %.0f cm^3 at %.0f mm;  hybrid at a similar deflection: %.0f cm^3\n', F(1).V(e) + V08, F(1).D(e)*1e3, ...
+    fprintf('  %.0f cm^3 at %.3f mm;  hybrid at a similar deflection: %.0f cm^3\n', F(1).V(e) + V08, F(1).D(e), ...
             interp1(F(2).D, F(2).V, min(F(1).D(e), max(F(2).D))))
 end
 
@@ -121,8 +123,8 @@ for k = 1:numel(kinds)
         O = F(k).opt{e}; idx = F(k).idx{e};
         delta = beamBending(N,O.I(idx)');
         sig = max(absM./O.S(idx));
-        fprintf('  %-18s point %2d: fast %.1f mm, solver %.1f mm, max stress %.2f MPa (allow %.0f)\n', ...
-                names{k}, e, F(k).D(e)*1e3, abs(delta(end))*1e3, sig/1e6, sigAllow/1e6)
+        fprintf('  %-18s point %2d: fast %.4f mm, solver %.4f mm, max stress %.2f MPa (allow %.0f)\n', ...
+                names{k}, e, F(k).D(e), abs(delta(end)), sig/1e6, sigAllow/1e6)
     end
 end
 
@@ -141,9 +143,9 @@ marks = {'s-','o-','^-'};
 %Pareto fronts
 figure(1)
 for k = 1:numel(kinds)
-    plot(F(k).D*1e3, F(k).V, marks{k}, 'Color',cols{k}, 'MarkerFaceColor',cols{k}, 'LineWidth',1.5), hold on
+    plot(F(k).D, F(k).V, marks{k}, 'Color',cols{k}, 'MarkerFaceColor',cols{k}, 'LineWidth',1.5), hold on
 end
-plot(F(1).D*1e3, F(1).V + V08, '--', 'Color',cols{1}, 'LineWidth',1)
+plot(F(1).D, F(1).V + V08, '--', 'Color',cols{1}, 'LineWidth',1)
 xlabel('tip deflection, mm'), ylabel('volume, cm^3'), grid on
 legend([names {sprintf('printable box + %.1f mm skin as dead weight', min(nSkin)*tLine)}], 'Location','northeast')
 title(sprintf('Printable designs in whole %.1f mm perimeters, SF = %.1f', tLine, SF))
@@ -200,12 +202,12 @@ function O = buildOptions(kind, xs, c, tLine, nSkin, nBox, wList)
     O.ok = O.ok & O.I > 0;
 end
 
-%best printable design for one lambda: minimise sum_i [A + lambda G_i/I]
+%best printable design for one lambda: minimise sum_i [q_i A + lambda G_i/I]
 %with every node meeting its stress limit and the section only staying the
 %same or shrinking from root to tip (dynamic programming, tip to root)
 function [idx, V, D] = evalLambda(lam, O, G, Sreq, q)
     N = numel(G);
-    cost = O.A' + lam*G./O.I';
+    cost = q.*O.A' + lam*G./O.I'; %q: trapezoidal weights, so the area term is the real volume
     cost(O.S' < Sreq | ~O.ok') = inf;
     g = zeros(size(cost)); g(N,:) = cost(N,:); %g(i,s) = best cost of nodes i..N with section s at node i
     for i = N-1:-1:1
@@ -221,7 +223,7 @@ function [idx, V, D] = evalLambda(lam, O, G, Sreq, q)
         [~, idx(i)] = min(v);
     end
     V = sum(q.*O.A(idx))*1e6; %cm^3
-    D = sum(G./O.I(idx)); %m
+    D = sum(G./O.I(idx)); %mm
 end
 
 %lightest design with tip deflection <= eps: bisect lambda (deflection
