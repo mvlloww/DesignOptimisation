@@ -80,15 +80,6 @@ for k = 1:numel(kinds)
             names{k}, F(k).V, F(k).D, F(k).xs, s.ts(1), s.w(1), s.tb(1), s.ts(m), s.w(m), s.tb(m))
 end
 
-%a bare box has no aerofoil shape: the blade still needs at least the
-%minimum 0.8 mm skin. Counting that skin as dead weight shows what the
-%hybrid gains by making the skin structural.
-[~, A08] = skinSection(min(nSkin)*tLine*1e-3, c);
-V08 = A08*R*1e6; %cm^3
-fprintf('\nMinimum %.1f mm skin alone: %.0f cm^3\n', min(nSkin)*tLine, V08)
-fprintf('Bare box + this skin as dead weight: %.0f cm^3;  skin + box hybrid: %.0f cm^3 (%.0f%% less)\n', ...
-        F(1).V + V08, F(2).V, 100*(1 - F(2).V/(F(1).V + V08)))
-
 %check against the full solver (deflection) and every node (stress)
 fprintf('\nCheck against beamBending (and nodal stress):\n')
 for k = 1:numel(kinds)
@@ -107,15 +98,14 @@ for k = 1:numel(kinds)
 end
 
 %% figures
-cols = {[0 0.45 0.74], [0.47 0.67 0.19], [0.3 0.3 0.3], [0.6 0.75 0.9]};
+cols = {[0 0.45 0.74], [0.47 0.67 0.19], [0.3 0.3 0.3]};
 
-%volumes, including the bare box with the skin it still needs for its shape
+%volume of the lightest printable design of each concept
 figure(1)
-labels = {'printable box', 'box + 0.8 mm skin (dead weight)', 'skin + box hybrid', 'skin only'};
-vals = [F(1).V, F(1).V + V08, F(2).V, F(3).V];
-bh = bar(categorical(labels,labels), vals); bh.FaceColor = 'flat';
-bh.CData = vertcat(cols{[1 4 2 3]});
-text(1:4, vals, compose('%.0f cm^3',vals), 'HorizontalAlignment','center','VerticalAlignment','bottom')
+vals = [F.V];
+bh = bar(categorical(names,names), vals); bh.FaceColor = 'flat';
+bh.CData = vertcat(cols{:});
+text(1:numel(vals), vals, compose('%.0f cm^3',vals), 'HorizontalAlignment','center','VerticalAlignment','bottom')
 ylabel('volume, cm^3'), grid on
 title(sprintf('Lightest printable designs in whole %.1f mm perimeters, SF = %.1f', tLine, SF))
 
