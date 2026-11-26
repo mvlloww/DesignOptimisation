@@ -121,17 +121,16 @@ subplot(2,1,2)
 stairs(r, s.w, '-', 'Color',cols{2}, 'LineWidth',1.5)
 xlabel('distance from root, m'), ylabel('box width, mm'), grid on
 
-%cross-sections of the lightest printable box and hybrid
+%cross-sections of the lightest hybrid along the span (the box shrinks and ends at ~0.6 m)
 figure(3)
-rShow = [0 0.5 1.0];
-for k = 1:2
-    s = describe(F(k).opt, F(k).idx);
-    for j = 1:numel(rShow)
-        [~, n] = min(abs(r - rShow(j)));
-        subplot(2,numel(rShow),(k-1)*numel(rShow) + j)
-        drawSection(s.ts(n), s.w(n), s.tb(n), F(k).xs, c)
-        title(sprintf('%s, r = %.1f m', names{k}, r(n)))
-    end
+rShow = [0 0.3 0.55];
+s = describe(F(2).opt, F(2).idx);
+for j = 1:numel(rShow)
+    [~, n] = min(abs(r - rShow(j)));
+    subplot(numel(rShow),1,j)
+    drawSection(s.ts(n), s.w(n), s.tb(n), F(2).xs, c)
+    ylim([-12 12])
+    title(sprintf('r = %.2f m: skin %.1f mm, box %.0f mm wide, wall %.1f mm', r(n), s.ts(n), s.w(n), s.tb(n)))
 end
 
 %effect of the box centre position (1-D brute-force sweep)
