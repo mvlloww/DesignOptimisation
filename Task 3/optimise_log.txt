@@ -1,0 +1,19 @@
+Design wind 7.63 m/s, lambda <= 8.51, 60 elements, tip loss ON
+
+B=1  Schmitz 0.4106 | stage1 0.4100 (lam 8.51, 20/20 starts within 0.1%) | stage2 0.4148 (lam 8.51, 8/8)
+      time 653 s, function evaluations 6765 + 3611
+B=2  Schmitz 0.4478 | stage1 0.4480 (lam 6.79, 20/20 starts within 0.1%) | stage2 0.4501 (lam 7.18, 8/8)
+      time 611 s, function evaluations 5832 + 3337
+B=3  Schmitz 0.4591 | stage1 0.4596 (lam 5.17, 20/20 starts within 0.1%) | stage2 0.4619 (lam 5.66, 8/8)
+      time 578 s, function evaluations 6202 + 3505
+B=4  Schmitz 0.4647 | stage1 0.4651 (lam 4.59, 20/20 starts within 0.1%) | stage2 0.4675 (lam 4.91, 8/8)
+      time 570 s, function evaluations 5754 + 3402
+B=5  Schmitz 0.4667 | stage1 0.4672 (lam 4.13, 17/20 starts within 0.1%) | stage2 0.4692 (lam 4.27, 8/8)
+      time 750 s, function evaluations 7339 + 4834
+
+ B  lambda  tip(m/s)  Cp_lin  Cp_spline  Schmitz  recheck  noTipLoss  N=120   N=240   sweepPeak@lam   P(W)  CT
+ 1   8.51    65.0    0.4100  0.4148    0.4106   0.4148   0.4952     0.4157  0.4162  0.4150@8.62   430  0.75  converged=1 sweepNaN=0/81
+ 2   7.18    54.8    0.4480  0.4501    0.4478   0.4501   0.4914     0.4511  0.4515  0.4499@7.25   466  0.79  converged=1 sweepNaN=0/81
+ 3   5.66    43.2    0.4596  0.4619    0.4591   0.4619   0.5008     0.4630  0.4634  0.4616@5.75   479  0.81  converged=1 sweepNaN=0/81
+ 4   4.91    37.4    0.4651  0.4675    0.4647   0.4675   0.5048     0.4686  0.4690  0.4667@4.88   484  0.82  converged=1 sweepNaN=0/81
+ 5   4.27    32.6    0.4672  0.4692    0.4667   0.4692   0.5042     0.4703  0.4707  0.4688@4.25   486  0.83  converged=1 sweepNaN=0/81

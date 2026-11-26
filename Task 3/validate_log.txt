@@ -1,0 +1,9 @@
+Lookup: max |CL(griddata) - CL(new)| = 0.00e+00 over 200 random points
+
+ B  lambda   Cp(demo)   Cp(new)    diff      t_demo  t_new
+ 3    6.0   0.455887   0.455887   0.0e+00    1.41s  0.036s
+ 2    8.0   0.358056   0.358056   0.0e+00    0.41s  0.018s
+ 3    4.0   0.075259   0.075259   0.0e+00    0.21s  0.008s
+ 4    5.0   0.504023   0.504023   0.0e+00    0.89s  0.022s
+
+Tip loss: Cp 0.4559 -> 0.4192 (8.1% lower), all elements converged: 1
