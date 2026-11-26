@@ -1,0 +1,28 @@
+
+12 starts, 11 feasible, 8 within 0.1% of best
+ start   E(kWh)  feasible  tip    Vd    c_root c_tip  dA_root dA_tip  nFun  time(s)
+   1     888.1   1       52.3 10.34  0.250  0.145    0.27   -4.23    376   1283
+   2     887.8   1       52.3  9.03  0.250  0.145   -1.97   -4.94    216    843
+   3     887.8   1       52.3  9.11  0.250  0.144   -1.84   -4.90    191    684
+   4     888.2   1       52.1 10.44  0.250  0.145    0.50   -4.13    470   1527
+   5      -Inf   0       60.2  4.24  0.113  0.109    0.14   -1.74      8      2
+   6     887.2   1       53.7 12.40  0.250  0.122    5.00   -2.87    400   1335
+   7     888.1   1       52.1  9.63  0.250  0.145   -0.95   -4.60    344    869
+   8     887.8   1       52.4  9.03  0.250  0.144   -1.96   -4.94    432   1120
+   9     886.8   1       52.4 12.13  0.250  0.127    5.00   -2.98    409   1234
+  10     888.2   1       52.0 10.45  0.250  0.145    0.52   -4.11   1025   2335
+  11     887.2   1       53.6 12.39  0.250  0.122    5.00   -2.87    332   1165
+  12     888.2   1       52.3 10.45  0.250  0.143    0.46   -4.11    430   1091
+
+Winter energy, B = 3, Rayleigh mean 6.15 m/s, 2160 h:
+  variable speed, peak-Cp blade           958.2 kWh  (100%)
+  fixed speed,    peak-Cp blade (tip 64.4)  808.9 kWh  (84.4%)
+  fixed speed,    energy-optimised (tip 52.0, Vd 10.45)  888.2 kWh  (92.7%)
+  energy-optimised gain over peak-Cp blade at fixed speed: +9.8%
+  energy-optimised blade: peak Cp 0.4567 vs 0.4619, design lambda 4.98
+
+Check 0.25 m/s bins: 885.1 / 806.7 / 954.9 kWh (1 m/s bins: 888.2 / 808.9 / 958.2)
+Stall model: clamp instead of Viterna -> 882.1 / 826.4 kWh (Viterna 888.2 / 808.9)
+Mean wind 5.88 m/s: variable 850.5, peak-Cp fixed 700.0, energy-opt fixed 769.5 kWh
+Mean wind 6.15 m/s: variable 958.2, peak-Cp fixed 808.9, energy-opt fixed 888.2 kWh
+Mean wind 6.29 m/s: variable 1015.8, peak-Cp fixed 867.2, energy-opt fixed 952.6 kWh

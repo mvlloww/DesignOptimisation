@@ -15,6 +15,13 @@ function out = BEMT(B, radiusLimits, lambda, chord, alphaIn, N, V, nu, tol, maxI
 %      alphaMode 'twist': alphaIn is the blade twist (deg), so the AoA
 %      follows the flow. Used to test a finished blade away from its design
 %      tip-speed ratio (Cp-lambda curve).
+%   4. opts.stall: what to do outside the S822 data (0-12 deg).
+%      'clamp' (default, as before): hold CL, CD at the edge of the data.
+%      'viterna': above 12 deg, Viterna-Corrigan post-stall extrapolation
+%      (as used in NREL AeroDyn) from the 12 deg values at the same Re;
+%      below 0 deg, CL continues linearly from the 0-1 deg slope and CD
+%      stays at its 0 deg value (down to -10 deg). Needed for fixed-speed
+%      operation, where high winds push sections past stall.
 % Chord and alphaIn can be 2 values (root, tip -> linear, as in the demo)
 % or N values (one per element, e.g. from a spline).
 % Returns a struct with Cp, CT and the spanwise distributions.
@@ -26,7 +33,9 @@ if ~isfield(opts, 'alphaMode'), opts.alphaMode = 'fixed'; end
 if ~isfield(opts, 'highInduction'), opts.highInduction = opts.tipLoss; end
 if ~isfield(opts, 'lookup'),    opts.lookup    = S822Lookup(); end
 if ~isfield(opts, 'relax'),     opts.relax     = 1;       end   % <1 damps oscillating iterations
+if ~isfield(opts, 'stall'),     opts.stall     = 'clamp'; end
 relax = opts.relax;
+viterna = strcmp(opts.stall, 'viterna');
 Lk  = opts.lookup;
 rho = 1.225;                                   % as hard-coded in BEMT_Demo
 bestLD = strcmp(opts.alphaMode, 'bestLD');
@@ -37,6 +46,7 @@ R  = r(end);  Rh = r(1);
 omega = V*lambda/R;
 c     = spread(chord, N);
 alpIn = spread(alphaIn, N);                    % degrees
+CDmax = 1.11 + 0.018*min((R - Rh)/mean(c), 50);   % Viterna: flat-plate drag for blade aspect ratio
 
 [Ft, Fn, aS, aPS, phiS, gamS, ReS, CLS, CDS, alS, FS] = deal(zeros(1, N));
 conv = true(1, N);
@@ -56,6 +66,12 @@ for i = 1:N
         end
         alQ = min(max(al, Lk.alphaRange(1)+1e-9), Lk.alphaRange(2)-1e-9);   % stay just inside the data edge
         CL = Lk.CL(alQ, ReQ);  CD = Lk.CD(alQ, ReQ);
+        if viterna && al > Lk.alphaRange(2)
+            [CL, CD] = viternaCoeffs(min(al, 90), Lk.alphaRange(2), CL, CD, CDmax);
+        elseif viterna && al < Lk.alphaRange(1)
+            slope = Lk.CL(Lk.alphaRange(1)+1, ReQ) - Lk.CL(alQ, ReQ);       % per degree
+            CL = CL + slope*(max(al, -10) - Lk.alphaRange(1));
+        end
         Cn = CL*cos(phi) + CD*sin(phi);
         Ct = CL*sin(phi) - CD*cos(phi);
 
@@ -102,6 +118,15 @@ out = struct('Cp', P/(0.5*rho*A*V^3), 'CT', T/(0.5*rho*A*V^2), 'P', P, 'Q', Q, '
     'r', r, 'c', c, 'alpha', alS, 'twist', rad2deg(gamS), 'phi', rad2deg(phiS), ...
     'Re', ReS, 'a', aS, 'aPrime', aPS, 'CL', CLS, 'CD', CDS, 'F', FS, ...
     'Ft', Ft, 'Fn', Fn, 'converged', conv, 'omega', omega);
+end
+
+function [CL, CD] = viternaCoeffs(alDeg, alSDeg, CLs, CDs, CDmax)
+% Viterna-Corrigan post-stall model, matched to (CLs, CDs) at the stall angle alS
+a  = deg2rad(alDeg);  as = deg2rad(alSDeg);
+A2 = (CLs - CDmax*sin(as)*cos(as))*sin(as)/cos(as)^2;
+B2 = (CDs - CDmax*sin(as)^2)/cos(as);
+CL = CDmax/2*sin(2*a) + A2*cos(a)^2/sin(a);
+CD = CDmax*sin(a)^2 + B2*cos(a);
 end
 
 function v = spread(x, N)
