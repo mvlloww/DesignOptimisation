@@ -1,0 +1,43 @@
+ Iter  Func-count            Fval   Feasibility   Step Length       Norm of   First-order  
+                                                                       step    optimality
+    0           7    1.000000e+00     5.000e-01     1.000e+00     0.000e+00     0.000e+00  
+    1           8    1.000000e+00     5.000e-01     7.000e-01     0.000e+00     0.000e+00  
+
+Converged to an infeasible point.
+
+fmincon stopped because the size of the current step is less than
+the value of the step size tolerance but constraints are not
+satisfied to within the value of the constraint tolerance.
+
+worker 5 start 5: E = -Inf kWh, feasible 0, x = [60.18 4.24 0.1135 0.1092 0.1404 -1.742], 2 s
+ Iter  Func-count            Fval   Feasibility   Step Length       Norm of   First-order  
+                                                                       step    optimality
+    0           7   -2.921650e-01     0.000e+00     1.000e+00     0.000e+00     9.618e-01  
+    1          17   -5.699043e-01     0.000e+00     3.430e-01     3.572e-01     1.096e+00  
+    2          26   -6.581697e-01     0.000e+00     7.000e-01     4.449e-01     9.161e-01  
+    3          35   -7.624572e-01     0.000e+00     4.900e-01     2.893e-01     1.743e-01  
+    4          42   -8.512992e-01     0.000e+00     1.000e+00     3.054e-01     3.252e-01  
+    5          50   -8.657558e-01     0.000e+00     7.000e-01     3.081e-01     2.974e-01  
+    6          57   -8.810097e-01     0.000e+00     1.000e+00     1.512e-01     1.381e-01  
+    7          64   -8.864436e-01     0.000e+00     1.000e+00     1.011e-01     4.315e-02  
+    8          71   -8.867082e-01     0.000e+00     1.000e+00     1.856e-02     9.730e-03  
+    9          78   -8.870473e-01     0.000e+00     1.000e+00     2.899e-02     1.471e-02  
+   10          85   -8.870771e-01     0.000e+00     1.000e+00     4.887e-03     5.714e-03  
+   11          92   -8.870922e-01     0.000e+00     1.000e+00     5.577e-03     1.960e-03  
+   12          99   -8.870988e-01     0.000e+00     1.000e+00     3.190e-03     1.413e-03  
+   13         106   -8.871473e-01     0.000e+00     1.000e+00     1.759e-02     3.161e-03  
+   14         121   -8.871681e-01     0.000e+00     5.765e-02     7.556e-03     4.240e-03  
+   15         138   -8.871734e-01     0.000e+00     2.825e-02     2.325e-03     4.373e-03  
+   16         159   -8.871739e-01     0.000e+00     9.689e-03     1.756e-04     4.366e-03  
+   17         188   -8.871740e-01     0.000e+00     3.910e-04     3.597e-05     4.365e-03  
+   18         229   -8.871740e-01     0.000e+00     5.412e-06     2.514e-06     4.365e-03  
+   19         282   -8.871740e-01     0.000e+00     7.490e-08     3.678e-08     4.365e-03  
+   20         332   -8.871740e-01     0.000e+00     1.798e-08     8.830e-09     4.365e-03  
+
+Local minimum possible. Constraints satisfied.
+
+fmincon stopped because the size of the current step is less than
+the value of the step size tolerance and constraints are 
+satisfied to within the value of the constraint tolerance.
+
+worker 5 start 11: E = 887.2 kWh, feasible 1, x = [53.63 12.39 0.25 0.1216 5 -2.868], 1165 s

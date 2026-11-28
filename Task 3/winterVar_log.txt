@@ -1,0 +1,27 @@
+
+VARIABLE speed: 12 starts, 12 feasible, 10 within 0.1% of best
+ start   E(kWh)  feasible  lamOpt  Vd    c_root c_tip  dA_root dA_tip  nFun  time(s)
+   1    1010.0   1       4.84  7.89  0.250  0.078   -0.10   -0.88    314   1340
+   2    1010.0   1       4.82  6.82  0.250  0.079   -0.25   -1.29    406   1558
+   3    1009.6   1       4.82  9.55  0.250  0.077    0.45   -0.59    229   1006
+   4    1009.6   1       4.82  9.55  0.250  0.077    0.45   -0.59    202    911
+   5    1007.7   1       4.75  4.00  0.250  0.077   -0.15   -1.68    222    958
+   6    1008.7   1       4.78 11.49  0.250  0.077    1.44   -0.50    510   2235
+   7    1010.0   1       4.82  6.87  0.250  0.079   -0.26   -1.25    299    868
+   8    1010.0   1       4.83  7.31  0.250  0.078   -0.21   -1.07    188    567
+   9    1010.0   1       4.84  7.88  0.250  0.078   -0.11   -0.88    291    938
+  10    1009.6   1       4.82  9.55  0.250  0.077    0.45   -0.59    455   1384
+  11    1009.6   1       4.82  9.55  0.250  0.077    0.45   -0.59    266    841
+  12    1010.0   1       4.83  6.88  0.250  0.079   -0.24   -1.26    265    592
+
+Winter energy, B = 3, Rayleigh mean 6.15 m/s, 2160 h:
+  variable speed, energy-optimised (lamOpt 4.84, Vd 7.89) 1010.0 kWh  (100%)
+  variable speed, peak-Cp blade           958.2 kWh  (94.9%)
+  fixed speed,    energy-optimised        888.2 kWh  (87.9%)
+  fixed speed,    peak-Cp blade           808.9 kWh  (80.1%)
+  variable: energy-optimised gain over peak-Cp blade: +5.4%
+  variable vs fixed (both energy-optimised): +13.7%
+  energy above the tip limit (V > 13.4 m/s): 212.6 of 1010.0 kWh
+  blade: peak Cp at design 0.4580 vs 0.4619; chord 250 -> 78 mm
+Check 0.25 m/s bins: 1006.5 kWh; clamp instead of Viterna: 1012.0 kWh (peak-Cp blade, variable, clamp: 974.2)
+Mean wind 5.88 / 6.15 / 6.29 m/s: 885.3 / 1010.0 / 1078.2 kWh (peak-Cp variable 850.5 / 958.2 / 1015.8)

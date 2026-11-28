@@ -1,5 +1,5 @@
-function OptimiseWinterEnergy(action, worker, nWorkers)
-% OPTIMISEWINTERENERGY  Option 4: blade + fixed rotor speed for maximum winter energy (B = 3).
+function OptimiseWinterEnergy(action, worker, nWorkers, mode)
+% OPTIMISEWINTERENERGY  Option 4: blade + rotor speed for maximum winter energy (B = 3).
 %
 %   maximise  E = sum_bins P(V) x Rayleigh probability x 2160 h     (kWh, Dec-Feb)
 %   wind      Rayleigh, mean 6.15 m/s, 1 m/s bins, cut-in 3, cut-out 20 m/s
@@ -23,19 +23,29 @@ function OptimiseWinterEnergy(action, worker, nWorkers)
 %   OptimiseWinterEnergy('worker', k, n)   -> starts k, k+n, ... -> winter_part_k.mat
 %   OptimiseWinterEnergy('combine')        -> best design, comparisons, checks, figures
 %   OptimiseWinterEnergy('quick')          -> 1 short start, smoke test
+%
+% VARIABLE-speed version (mode = 'variable'): same blade construction, but
+%   x(1) = lambda_opt, the design tip-speed ratio, which is also the
+%   controller's target: lambda = min(lambda_opt, tipMax/V). So the blade is
+%   optimised for energy WITH variable-speed control, for a fair comparison.
+%   OptimiseWinterEnergy('worker', k, n, 'variable') -> winterVar_part_k.mat
+%   OptimiseWinterEnergy('combineVar')               -> adds it to results_winter.mat
 
 if nargin < 1, action = 'quick'; end
+if nargin < 4, mode = 'fixed'; end
 here = fileparts(mfilename('fullpath'));
 [P, L, W, B, peak] = setup(here);
 
 switch action
     case {'worker', 'quick'}
         if strcmp(action, 'quick'), worker = 1; nWorkers = 1; P.nStart = 1; P.fmIt = 3; end
-        lb = [20, 4, P.cMin, P.cMin, -P.dAmax, -P.dAmax];
-        ub = [P.tipMax, 14, P.cMax, P.cMax, P.dAmax, P.dAmax];
+        [lb, ub] = bounds(P, mode);
         rng(3); Z0 = rand(P.nStart, 6); Z0(:,3:4) = sort(Z0(:,3:4), 2, 'descend');
-        x1 = peak.s1.x;                                   % start 1: peak-Cp linear blade at max tip speed
-        Z0(1,:) = ([P.tipMax, P.tipMax/x1(1), x1(2:5)] - lb)./(ub - lb);
+        x1 = peak.s1.x;                                   % start 1: peak-Cp linear blade
+        if strcmp(mode, 'fixed'), x0 = [P.tipMax, P.tipMax/x1(1), x1(2:5)];   % at max tip speed
+        else,                     x0 = [x1(1), P.V, x1(2:5)];                % at its own design point
+        end
+        Z0(1,:) = (x0 - lb)./(ub - lb);
         Z0 = min(max(Z0, 0), 1);
         fo = optimoptions('fmincon', 'Algorithm', 'sqp', 'Display', 'iter', ...
             'MaxFunctionEvaluations', 1500, 'MaxIterations', P.fmIt, ...
@@ -45,14 +55,39 @@ switch action
         runs = struct('start', {}, 'x', {}, 'E', {}, 'feasible', {}, 'nFun', {}, 'time', {}, 'flag', {});
         for s = mine
             t0 = tic;
-            [x, E, ok, nf, flag] = oneStart(Z0(s,:), lb, ub, fo, P, L, W, B);
+            [x, E, ok, nf, flag] = oneStart(Z0(s,:), lb, ub, fo, P, L, W, B, mode);
             runs(end+1) = struct('start', s, 'x', x, 'E', E, 'feasible', ok, 'nFun', nf, 'time', toc(t0), 'flag', flag); %#ok<AGROW>
-            fprintf('worker %d start %d: E = %.1f kWh, feasible %d, x = %s, %.0f s\n', ...
-                worker, s, E, ok, mat2str(x, 4), toc(t0));
-            if ~strcmp(action, 'quick'), save(fullfile(here, sprintf('winter_part_%d.mat', worker)), 'runs'); end
+            fprintf('[%s] worker %d start %d: E = %.1f kWh, feasible %d, x = %s, %.0f s\n', ...
+                mode, worker, s, E, ok, mat2str(x, 4), toc(t0));
+            if ~strcmp(action, 'quick'), save(fullfile(here, sprintf('%s_part_%d.mat', partName(mode), worker)), 'runs'); end
         end
     case 'combine'
         combine(here, P, L, W, B, peak);
+    case 'combineVar'
+        combineVar(here, P, L, W, B, peak);
+end
+end
+
+function n = partName(mode)
+if strcmp(mode, 'fixed'), n = 'winter'; else, n = 'winterVar'; end
+end
+
+function [lb, ub] = bounds(P, mode)
+% fixed:    x(1) = tip speed (m/s), x(2) = design wind Vd, lambda_d = tip/Vd
+% variable: x(1) = lambda_opt (design + controller target), x(2) = Vd
+if strcmp(mode, 'fixed'), lb1 = 20; ub1 = P.tipMax; else, lb1 = 2; ub1 = 10; end
+lb = [lb1, 4,  P.cMin, P.cMin, -P.dAmax, -P.dAmax];
+ub = [ub1, 14, P.cMax, P.cMax,  P.dAmax,  P.dAmax];
+end
+
+function x = designPoint(x, mode)
+% buildBlade wants [tip speed, Vd, ...]; in variable mode x(1) is lambda
+if strcmp(mode, 'variable'), x(1) = x(1)*x(2); end
+end
+
+function ctrl = control(x, mode)
+if strcmp(mode, 'fixed'), ctrl = struct('mode', 'fixed', 'tip', x(1));
+else,                     ctrl = struct('mode', 'variable', 'lamOpt', x(1));
 end
 end
 
@@ -72,17 +107,17 @@ od = BEMT(B, [P.Rhub P.R], x(1)/x(2), x(3:4), x(5:6), P.N, x(2), P.nu, P.tol, P.
 c = od.c;  twist = od.twist;
 end
 
-function [x, E, ok, nf, flag] = oneStart(z0, lb, ub, fo, P, L, W, B)
+function [x, E, ok, nf, flag] = oneStart(z0, lb, ub, fo, P, L, W, B, mode)
 toX = @(z) lb + z(:)'.*(ub - lb);
 zC = []; rC = [];
     function r = evalZ(z)
         if isempty(zC) || any(z(:)' ~= zC)
             x_ = toX(z);
-            [c, tw, od] = buildBlade(x_, P, L, B);
+            [c, tw, od] = buildBlade(designPoint(x_, mode), P, L, B);
             m = real(od.F) > 1e-9 & isfinite(od.Re);
             r.od = od; r.E = -inf; r.allConv = false;
             if all(od.converged) && any(m)
-                [r.E, d] = WinterEnergy(B, c, tw, struct('mode', 'fixed', 'tip', x_(1)), W, P, L);
+                [r.E, d] = WinterEnergy(B, c, tw, control(x_, mode), W, P, L);
                 r.allConv = d.allConverged;
             end
             r.m = m; zC = z(:)'; rC = r;
@@ -169,35 +204,96 @@ save(fullfile(here, 'results_winter.mat'), 'win', 'P');
 figures(win, P, pk, fullfile(here, 'figures'));
 end
 
-function figures(w, P, pk, figDir)
-cols = lines(3);
+function combineVar(here, P, L, W, B, peak)
+% Variable-speed energy optimisation: best start, checks, added to results_winter.mat
+runs = [];
+for f = dir(fullfile(here, 'winterVar_part_*.mat'))'
+    S = load(fullfile(here, f.name)); runs = [runs, S.runs]; %#ok<AGROW>
+end
+[~, i] = sort([runs.start]); runs = runs(i);
+Ef = [runs.E]; Ef(~[runs.feasible]) = -inf;
+[Ebest, j] = max(Ef); xb = runs(j).x;
+fprintf('\nVARIABLE speed: %d starts, %d feasible, %d within 0.1%% of best\n', numel(runs), ...
+    sum([runs.feasible]), sum(Ef >= Ebest*(1 - 1e-3)));
+fprintf(' start   E(kWh)  feasible  lamOpt  Vd    c_root c_tip  dA_root dA_tip  nFun  time(s)\n');
+for r = runs
+    fprintf('%4d   %7.1f   %d      %5.2f %5.2f  %5.3f  %5.3f  %6.2f  %6.2f  %5d %6.0f\n', ...
+        r.start, r.E, r.feasible, r.x, r.nFun, r.time);
+end
+S = load(fullfile(here, 'results_winter.mat')); w = S.win;
+[cVo, twVo, odVo] = buildBlade(designPoint(xb, 'variable'), P, L, B);
+[EVo, dVo] = WinterEnergy(B, cVo, twVo, control(xb, 'variable'), W, P, L);
+pk = peak.s2;
+fprintf('\nWinter energy, B = 3, Rayleigh mean %.2f m/s, %d h:\n', W.Vmean, W.hours);
+fprintf('  variable speed, energy-optimised (lamOpt %.2f, Vd %.2f) %6.1f kWh  (100%%)\n', xb(1), xb(2), EVo);
+fprintf('  variable speed, peak-Cp blade          %6.1f kWh  (%.1f%%)\n', w.EV, 100*w.EV/EVo);
+fprintf('  fixed speed,    energy-optimised       %6.1f kWh  (%.1f%%)\n', w.EE, 100*w.EE/EVo);
+fprintf('  fixed speed,    peak-Cp blade          %6.1f kWh  (%.1f%%)\n', w.EP, 100*w.EP/EVo);
+fprintf('  variable: energy-optimised gain over peak-Cp blade: %+.1f%%\n', 100*(EVo/w.EV - 1));
+fprintf('  variable vs fixed (both energy-optimised): %+.1f%%\n', 100*(EVo/w.EE - 1));
+fprintf('  energy above the tip limit (V > %.1f m/s): %.1f of %.1f kWh\n', P.tipMax/xb(1), ...
+    sum(dVo.Ebin(dVo.V > P.tipMax/xb(1))), EVo);
+fprintf('  blade: peak Cp at design %.4f vs %.4f; chord %.0f -> %.0f mm\n', odVo.Cp, pk.Cp, 1000*cVo(1), 1000*cVo(end));
+ctl = control(xb, 'variable');
+chk.binsE  = WinterEnergy(B, cVo, twVo, ctl, WindModel(W.Vmean, 0.25), P, L);
+chk.clampE = WinterEnergy(B, cVo, twVo, ctl, W, P, L, 'clamp');
+fprintf('Check 0.25 m/s bins: %.1f kWh; clamp instead of Viterna: %.1f kWh (peak-Cp blade, variable, clamp: %.1f)\n', ...
+    chk.binsE, chk.clampE, WinterEnergy(B, pk.out.c, pk.out.twist, struct('mode', 'variable', 'lamOpt', pk.x(1)), W, P, L, 'clamp'));
+sens = zeros(1, 3);
+for k = 1:3, sens(k) = WinterEnergy(B, cVo, twVo, ctl, WindModel(w.Vm(k)), P, L); end
+fprintf('Mean wind %.2f / %.2f / %.2f m/s: %.1f / %.1f / %.1f kWh (peak-Cp variable %.1f / %.1f / %.1f)\n', w.Vm, sens, w.sens(:,1));
+o = struct('lookup', L, 'tipLoss', true, 'alphaMode', 'twist', 'relax', 0.3, 'stall', 'viterna');
+cpV = nan(1, numel(w.lamS));
+for k = 1:numel(w.lamS)
+    s = BEMT(B, [P.Rhub P.R], w.lamS(k), cVo, twVo, P.N, P.V, P.nu, P.tol, 5000, o); if all(s.converged), cpV(k) = s.Cp; end
+end
+winVar = struct('runs', runs, 'xb', xb, 'EVo', EVo, 'dVo', dVo, 'cVo', cVo, 'twVo', twVo, 'odVo', odVo, ...
+    'chk', chk, 'sens', sens, 'cpV', cpV);
+win = w; save(fullfile(here, 'results_winter.mat'), 'win', 'winVar', 'P');
+figures(w, P, pk, fullfile(here, 'figures'), winVar);
+end
+
+function figures(w, P, pk, figDir, wv)
+if nargin < 5, wv = []; end
+cols = lines(4);
 names = {'Variable speed, peak-C_p blade', sprintf('Fixed speed, peak-C_p blade (tip %.0f m/s)', w.tipP), ...
          sprintf('Fixed speed, energy-optimised blade (tip %.0f m/s)', w.xb(1))};
 ds = {w.dV, w.dP, w.dE};
+if ~isempty(wv)
+    names{4} = sprintf('Variable speed, energy-optimised blade (\\lambda_{opt} %.2f)', wv.xb(1));
+    ds{4} = wv.dVo;
+end
+nd = numel(ds);
 % power curve + energy per bin
 f = figure('Visible', 'off', 'Position', [0 0 1000 400]);
 tiledlayout(f, 1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 nexttile; hold on; grid on;
-for k = 1:3, plot(ds{k}.V, ds{k}.P, 'o-', 'Color', cols(k,:), 'LineWidth', 1.5, 'MarkerSize', 4); end
+for k = 1:nd, plot(ds{k}.V, ds{k}.P, 'o-', 'Color', cols(k,:), 'LineWidth', 1.5, 'MarkerSize', 4); end
 xlabel('Wind speed (m/s)'); ylabel('Power (W)'); legend(names, 'Location', 'northwest'); title('Power curves');
 nexttile; hold on; grid on;
-bar(w.dV.V, [w.dV.Ebin; w.dP.Ebin; w.dE.Ebin]', 1);
+Eb = cell2mat(cellfun(@(d) d.Ebin(:), ds, 'UniformOutput', false));
+hb = bar(w.dV.V, Eb, 1); for k = 1:nd, hb(k).FaceColor = cols(k,:); end
 yyaxis right; plot(w.W.Vmid, w.W.prob*100, 'k--', 'LineWidth', 1.2); ylabel('Rayleigh probability (%)');
 yyaxis left; ylabel('Winter energy per 1 m/s bin (kWh)'); xlabel('Wind speed (m/s)');
-title(sprintf('Energy per bin: %.0f / %.0f / %.0f kWh', w.EV, w.EP, w.EE));
+Etot = cellfun(@(d) sum(d.Ebin), ds);
+title(['Energy per bin: ' strjoin(arrayfun(@(e) sprintf('%.0f', e), Etot, 'UniformOutput', false), ' / ') ' kWh']);
 saveBoth(f, 't3_winter_power_energy', figDir);
 % Cp-lambda and blade shapes
 f = figure('Visible', 'off', 'Position', [0 0 1000 400]);
 tiledlayout(f, 1, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
 nexttile; hold on; grid on;
 plot(w.lamS, w.cpS(1,:), 'Color', cols(2,:), 'LineWidth', 1.5); plot(w.lamS, w.cpS(2,:), 'Color', cols(3,:), 'LineWidth', 1.5);
-xlabel('\lambda'); ylabel('C_p'); ylim([0 0.5]); legend('peak-C_p blade', 'energy-optimised blade', 'Location', 'south');
+lg = {'peak-C_p blade', 'energy-opt. (fixed speed)'};
+if ~isempty(wv), plot(w.lamS, wv.cpV, 'Color', cols(4,:), 'LineWidth', 1.5); lg{3} = 'energy-opt. (variable speed)'; end
+xlabel('\lambda'); ylabel('C_p'); ylim([0 0.5]); legend(lg, 'Location', 'south');
 title('C_p-\lambda (fixed blade shape)');
 nexttile; hold on; grid on;
 plot(pk.out.r, 1000*pk.out.c, 'Color', cols(2,:), 'LineWidth', 1.5); plot(w.odE.r, 1000*w.cE, 'Color', cols(3,:), 'LineWidth', 1.5);
+if ~isempty(wv), plot(wv.odVo.r, 1000*wv.cVo, 'Color', cols(4,:), 'LineWidth', 1.5); end
 xlabel('r (m)'); ylabel('Chord (mm)'); title('Chord');
 nexttile; hold on; grid on;
 plot(pk.out.r, pk.out.twist, 'Color', cols(2,:), 'LineWidth', 1.5); plot(w.odE.r, w.twE, 'Color', cols(3,:), 'LineWidth', 1.5);
+if ~isempty(wv), plot(wv.odVo.r, wv.twVo, 'Color', cols(4,:), 'LineWidth', 1.5); end
 xlabel('r (m)'); ylabel('Twist (deg)'); title('Twist');
 saveBoth(f, 't3_winter_blades', figDir);
 end

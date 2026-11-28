@@ -1,0 +1,207 @@
+% ME52037 Design Optimisation - Task 3: Aerodynamic optimisation of a small wind turbine
+% OUTLINE ONLY: headings, page budget, points to cover, numbers and figures.
+% Blue text = planning notes, to be replaced by your own prose.
+% Upload this file plus the Task 3/figures folder (as figures/) to Overleaf.
+% Limit: 8 pages excluding cover, references and appendices. Due 04/12/2026 16:00.
+% Marks: Methods 35% | Results 15% | Innovation 15% | Reflection 15% | Structure/presentation 20%
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parskip}{3pt}
+\newcommand{\note}[1]{\textcolor{blue}{#1}}
+\newcommand{\chk}[1]{\textcolor{red}{\textbf{CHECK:} #1}}
+
+\title{\vspace{-1.2cm}ME52037 Task 3: Aerodynamic Optimisation of a Small Wind Turbine Blade}
+\author{Oskar Chu}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1cm}
+
+%==========================================================
+\section{Introduction and objective}  % ~1 page (Methods)
+%==========================================================
+\note{
+\begin{itemize}
+  \item Brief: small HAWT, $D < 2.2$\,m, S822 aerofoil, supplied \texttt{BEMT\_Demo.m}; brief mentions incoming wind, rotor loads, blade mass and noise.
+  \item Two objectives, in order:
+  \begin{enumerate}
+    \item Peak $C_p$ at the design wind 7.63\,m/s (single operating point) -- for each $B = 1$--5.
+    \item Winter (Dec--Feb, 2160\,h) energy for $B = 3$ at fixed rotor speed -- the objective that matters to an owner.
+  \end{enumerate}
+  \item Why peak $C_p$ first: cheap (1 BEMT call), gives the baseline blade and chooses $B$.
+  \item Why energy second: a fixed-speed rotor spends most of its time away from its design $\lambda$; peak $C_p$ $\neq$ most energy.
+  \item State $R = 1.1$\,m, $R_\text{hub} = 0.15$\,m, $\rho = 1.225$, $\nu$, 60 elements.
+\end{itemize}
+}
+
+%==========================================================
+\section{Aerodynamic model}  % ~1 page (Methods)
+%==========================================================
+\note{
+\begin{itemize}
+  \item BEMT iteration for $a$, $a'$ per element (refer to \texttt{BEMT\_Demo}); equations for $\phi$, $W$, Re, $\gamma = \phi - \alpha$, torque, $P$, $C_p$.
+  \item Additions to the demo (all switchable, validated):
+  \begin{itemize}
+    \item S822 lookup built once (\texttt{scatteredInterpolant}) -- identical to griddata (max diff 0), $\sim$40$\times$ faster (1.41\,s $\to$ 0.036\,s).
+    \item Prandtl tip loss + Buhl high-induction correction \cite{Buhl2005}: $C_p$ 0.4559 $\to$ 0.4192 (8.1\% lower) for the demo blade.
+    \item \texttt{bestLD} mode: section AoA = $\alpha_\text{best}(\text{Re})$ + optimiser offset. Fig.~\ref{fig:alphabest}.
+    \item \texttt{twist} mode: frozen blade, AoA follows the flow (off-design).
+    \item Viterna--Corrigan post-stall \cite{Viterna1982} above 12$^\circ$, linear CL below 0$^\circ$ (own rule) -- winter bins only.
+  \end{itemize}
+  \item Validation table vs demo (4 cases, diff $0$) -- full table to appendix.
+\end{itemize}
+}
+\begin{figure}[h]\centering
+\includegraphics[width=0.6\textwidth]{figures/t3_alpha_best.pdf}
+\caption{\note{Best-L/D angle vs Re from the S822 data, and the fit used.}}\label{fig:alphabest}
+\end{figure}
+
+%==========================================================
+\section{Optimisation problem 1: peak $C_p$}  % ~1.25 pages (Methods)
+%==========================================================
+\subsection{Design variables and parameterisation}
+\note{
+\begin{itemize}
+  \item Stage 1 (5 vars): $x = [\lambda, c_\text{root}, c_\text{tip}, \Delta\alpha_\text{root}, \Delta\alpha_\text{tip}]$, linear chord and linear AoA offset.
+  \item Stage 2 (8 vars): $\lambda$, 5-point pchip chord, 2 offsets; warm-started from stage 1.
+  \item Why AoA offset (not twist) as a variable: twist then follows from $\phi$, keeps each section near best L/D.
+  \item All variables normalised to $z \in [0,1]$ -- balances finite-difference steps.
+\end{itemize}
+}
+\subsection{Constraints}
+\note{
+\begin{itemize}
+  \item Bounds: $\lambda \in [2, 8.51]$; chord 20--250\,mm; offsets $\pm 5^\circ$ (engineering judgement).
+  \item Tip speed $\le 65$\,m/s $\Rightarrow \lambda \le 8.51$: noise limit 42\,dB(A) at a house 100\,m away \cite{MCS020,Hau2013,Wagner1996}. \chk{Hau equation and the 65\,m/s in MATLAB.}
+  \item Chord taper $c_\text{tip} \le c_\text{root}$ \cite{Manwell2009,Burton2011}. \chk{active at the peak-$C_p$ optimum?}
+  \item Re and AoA inside the S822 data at every section \cite{Somers2005}.
+  \item Every BEMT element converged \cite{Ning2014,Martins2021}.
+\end{itemize}
+}
+\subsection{Optimiser}
+\note{
+\begin{itemize}
+  \item \texttt{fmincon} SQP: smooth, few variables, nonlinear constraints; finite-difference gradients; BFGS Hessian.
+  \item Cache: objective and constraints share one BEMT call.
+  \item Multistart: 20 starts (stage 1), 8 (stage 2) -- evidence for global optimum.
+  \item Flowchart (export from FigJam, draw yourself). Fig.~\ref{fig:flow}.
+  \item Benchmark: Schmitz ideal blade \cite{Gasch2012} at the same $\lambda$.
+\end{itemize}
+}
+\begin{figure}[h]\centering
+\fbox{\parbox{0.8\textwidth}{\centering \note{Flowchart of the optimisation loop -- export from FigJam.}}}
+\caption{\note{Optimisation loop.}}\label{fig:flow}
+\end{figure}
+
+%==========================================================
+\section{Optimisation problem 2: winter energy at fixed speed}  % ~0.75 page (Methods)
+%==========================================================
+\note{
+\begin{itemize}
+  \item Wind: Rayleigh, mean 6.15\,m/s (Met Office winter), 1\,m/s bins 3--20\,m/s, exact bin probabilities, power at bin midpoints, 2160\,h.
+  \item Objective $E = \sum_k P(V_k)\,p_k\,2160$; $P<0$ set to 0.
+  \item Variables (6): tip speed, design wind $V_d$, $c_\text{root}$, $c_\text{tip}$, 2 AoA offsets. Blade built at $V_d$ (bestLD), twist then frozen.
+  \item Same constraints at the design point; convergence in every bin.
+  \item 12 starts on 6 parallel MATLAB processes; start 1 = peak-$C_p$ blade.
+  \item Baselines: peak-$C_p$ blade at variable speed ($\lambda = \min(\lambda_\text{opt}, 65/V)$) and at its best fixed speed (\texttt{fminbnd}).
+\end{itemize}
+}
+
+%==========================================================
+\section{Results}  % ~2.25 pages (Results 15%)
+%==========================================================
+\subsection{Peak $C_p$ and choice of $B$}
+\note{
+\begin{itemize}
+  \item Table: $B$, $\lambda$, tip speed, $C_p$ (lin / spline / Schmitz), rpm, torque, blade area.
+  \begin{itemize}
+    \item $B$=1: 0.4148 @ 8.51 (65\,m/s); 2: 0.4501 @ 7.18; 3: 0.4619 @ 5.66 (43\,m/s); 4: 0.4675 @ 4.91; 5: 0.4692 @ 4.27.
+    \item All beat Schmitz slightly (0.4591 for $B$=3); 20/20 starts within 0.1\% (17/20 for $B$=5); 8/8 stage 2.
+  \end{itemize}
+  \item Pick $B = 3$: knee of the curve, lowest dynamically balanced $B$, 65\% less blade area than $B$=5 for $-1.5\%$ $C_p$.
+  \item Figs: \texttt{t3\_cp\_vs\_B}, \texttt{t3\_blade\_geometry\_B3} (and/or \texttt{t3\_rotors\_all}).
+\end{itemize}
+}
+\subsection{Winter energy}
+\note{
+\begin{itemize}
+  \item Table: variable 958.2\,kWh (100\%); fixed peak-$C_p$ 808.9 (84.4\%, tip 64.4); fixed energy-optimised 888.2 (92.7\%, tip 52.0, $V_d$ 10.45).
+  \item Gain +9.8\% over the peak-$C_p$ blade at fixed speed.
+  \item Blade: root chord 250\,mm (on bound) $\to$ 145\,mm, twist $\sim$5$^\circ$ higher; peak $C_p$ 0.457 vs 0.462 but broader curve.
+  \item Multistart: 11/12 feasible, 8 within 0.1\%; $V_d$ 9--12.4 at equal $E$ (redundant with offsets -- flat valley).
+  \item Figs: \texttt{t3\_winter\_power\_energy}, \texttt{t3\_winter\_blades}.
+\end{itemize}
+}
+
+%==========================================================
+\section{Verification and sensitivity}  % ~0.5 page (rest in appendix)
+%==========================================================
+\note{
+\begin{itemize}
+  \item Re-check with frozen twist reproduces $C_p$; N = 120/240 elements: $+0.2$--$0.3\%$.
+  \item Without tip loss: $C_p$ $\sim$8\% higher -- shows why it matters.
+  \item Bins 0.25\,m/s: 885.1 / 806.7 / 954.9 (vs 888.2 / 808.9 / 958.2).
+  \item Stall model clamp vs Viterna: 882.1 / 826.4 -- gain falls to $\sim$7\%. Optimum was found using Viterna (not re-optimised with clamp).
+  \item Mean wind 5.88 / 6.29\,m/s: ranking unchanged, gain 9.9\% / 9.8\%.
+\end{itemize}
+}
+
+%==========================================================
+\section{Reflection}  % ~1.5 pages (Reflection 15% + Innovation 15%)
+%==========================================================
+\note{
+\begin{itemize}
+  \item Innovation: two-stage objective (peak $C_p$ $\to$ energy), noise-derived tip limit, bestLD+offset parameterisation, Viterna for off-design, parallel multistart.
+  \item Limitations:
+  \begin{itemize}
+    \item No rated-power cap (energy blade gives 4.5\,kW at 19.5\,m/s) -- generator/gearbox would limit this.
+    \item Root chord on its bound; blade area $\sim$2$\times$ -- energy vs material trade-off not explored (Pareto, $\varepsilon$-constraint).
+    \item No structural/load check (root bending moment, thrust).
+    \item BEMT convergence handled by a constraint; Ning's method \cite{Ning2014} would be more robust.
+    \item Cost: 2.6\,s per energy evaluation, 11--39\,min per start -- surrogate model would cut this.
+    \item Rayleigh assumed (only the mean known); steady, no turbulence, no yaw.
+  \end{itemize}
+  \item What I would do next.
+\end{itemize}
+}
+
+%==========================================================
+\section{Conclusion}  % ~0.25 page
+%==========================================================
+\note{Recommended design ($B$=3, which blade + control), key numbers, main caveat.}
+
+%==========================================================
+\section*{GenAI acknowledgement}  % required by the assessment; write yourself
+%==========================================================
+\note{State what GenAI tools were used for (e.g. code help, explanation, finding sources) and that the writing and figures are your own.}
+
+%==========================================================
+\begin{thebibliography}{99}
+\bibitem{Manwell2009} J.F. Manwell, J.G. McGowan, A.L. Rogers, \emph{Wind Energy Explained}, 2nd ed., Wiley, 2009.
+\bibitem{Burton2011} T. Burton, N. Jenkins, D. Sharpe, E. Bossanyi, \emph{Wind Energy Handbook}, 2nd ed., Wiley, 2011.
+\bibitem{Gasch2012} R. Gasch, J. Twele (eds.), \emph{Wind Power Plants}, 2nd ed., Springer, 2012.
+\bibitem{Hau2013} E. Hau, \emph{Wind Turbines: Fundamentals, Technologies, Application, Economics}, 3rd ed., Springer, 2013.
+\bibitem{Wagner1996} S. Wagner, R. Bareiß, G. Guidati, \emph{Wind Turbine Noise}, Springer, 1996.
+\bibitem{MCS020} Microgeneration Certification Scheme, \emph{MCS 020: MCS Planning Standards}, Issue 1.0, 2011. \chk{current issue}
+\bibitem{Ning2014} S.A. Ning, ``A simple solution method for the blade element momentum equations with guaranteed convergence'', \emph{Wind Energy} 17(9), 1327--1345, 2014, doi:10.1002/we.1636.
+\bibitem{Martins2021} J.R.R.A. Martins, A. Ning, \emph{Engineering Design Optimization}, Cambridge University Press, 2021.
+\bibitem{Buhl2005} M.L. Buhl, ``A new empirical relationship between thrust coefficient and induction factor for the turbulent windmill state'', NREL/TP-500-36834, 2005.
+\bibitem{Somers2005} D.M. Somers, ``S822 and S823 Airfoils: October 1992--December 1993'', NREL/SR-500-36342, 2005.
+\bibitem{Viterna1982} L.A. Viterna, R.D. Corrigan, ``Fixed pitch rotor performance of large horizontal axis wind turbines'', DOE/NASA Workshop on Large Horizontal Axis Wind Turbines, NASA Lewis Research Center, 1982.
+\bibitem{Keegan2013} M.H. Keegan, D.H. Nash, M.M. Stack, ``On erosion issues associated with the leading edge of wind turbine blades'', \emph{J. Phys. D: Appl. Phys.} 46, 383001, 2013.
+\end{thebibliography}
+
+%==========================================================
+\appendix
+\section{BEMT validation against \texttt{BEMT\_Demo}}  \note{validate\_log.txt table.}
+\section{Multistart tables}  \note{optimise\_log.txt and winter\_log.txt start tables.}
+\section{Code listing / file map}  \note{BEMT.m, S822Lookup.m, OptimisePeakCp.m, OptimiseWinterEnergy.m, WinterEnergy.m, WindModel.m, VisualiseBlade.m.}
+
+\end{document}
