@@ -14,8 +14,11 @@ function [E, d] = WinterEnergy(B, c, twist, ctrl, W, P, L, stall)
 %   stall       : 'viterna' (default) or 'clamp'
 % Power below zero (rotor would need driving at low wind) is set to zero:
 % the generator just stops drawing power.
+% Rated power: if P.Prated (W) is set, shaft power is capped at it, i.e.
+% ideal power control above rated wind (stall/pitch/furl). Default: no cap.
 
 if nargin < 8, stall = 'viterna'; end
+Prated = inf; if isfield(P, 'Prated'), Prated = P.Prated; end
 o.lookup = L; o.tipLoss = true; o.alphaMode = 'twist'; o.relax = 0.3; o.stall = stall;
 nb = numel(W.Vmid);
 [Pw, lam, Cp, conv] = deal(zeros(1, nb));
@@ -25,7 +28,7 @@ for k = 1:nb
     else,                             lam(k) = ctrl.tip/V;
     end
     s = BEMT(B, [P.Rhub P.R], lam(k), c, twist, numel(c), V, P.nu, P.tol, 5000, o);
-    Pw(k) = max(s.P, 0); Cp(k) = s.Cp; conv(k) = mean(s.converged);
+    Pw(k) = min(max(s.P, 0), Prated); Cp(k) = s.Cp; conv(k) = mean(s.converged);
 end
 Eb = Pw.*W.prob*W.hours/1000;                 % kWh from each bin
 E  = sum(Eb);

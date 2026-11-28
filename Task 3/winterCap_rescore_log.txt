@@ -1,0 +1,9 @@
+
+Re-scored with rated-power cap (kWh, Dec-Feb, mean 6.15 m/s):
+design                                     1 kW   1.5 kW     2 kW   no cap
+variable, peak-Cp blade                   750.1    861.5    923.7    958.2
+variable, energy-opt (uncapped)           746.3    857.5    921.1   1010.0
+fixed, peak-Cp blade (best tip)           680.3    760.2    796.4    808.9
+fixed, energy-opt (uncapped, tip 52)      652.4    762.1    824.2    888.2
+peak-Cp blade best fixed tip speed: 48.2 / 54.2 / 59.5 / 64.4 m/s
+energy-opt gain over peak-Cp: variable [-0.5 -0.5 -0.3 5.4] %, fixed [-4.1 0.3 3.5 9.8] %
